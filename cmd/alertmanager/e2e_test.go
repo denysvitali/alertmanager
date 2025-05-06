@@ -28,7 +28,7 @@ const (
 )
 
 var (
-	log            *logging.L
+	l              *logging.L
 	retryIntervals = fhttpc.Intervals{100 * time.Millisecond, 500 * time.Millisecond, time.Second}
 
 	// PROD:
@@ -46,8 +46,7 @@ var (
 )
 
 func TestAlertSequence(t *testing.T) {
-
-	log.Infof("starting %d Alertmanager instances, waiting for gossip to settle...", nInstances)
+	l.Infof("starting %d Alertmanager instances, waiting for gossip to settle...", nInstances)
 
 	tempDir := t.TempDir()
 	if err := prepareConfig(tempDir); err != nil {
@@ -74,7 +73,7 @@ func TestAlertSequence(t *testing.T) {
 			break
 		}
 	}
-	log.Infof("all instances ready / healthy - Sending %d alerts...", nAlerts)
+	l.Infof("all instances ready / healthy - Sending %d alerts...", nAlerts)
 	go trackAMs(ams, webhookConsumer)
 
 	///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -84,24 +83,24 @@ func TestAlertSequence(t *testing.T) {
 	// sendAlertsSingleInstanceRR(t, ams, nAlerts)
 	//////////////////////////////////////////////////////////////////////////////////////////////////
 
-	log.Infof("sent %d alerts, waiting for state to settle...", nAlerts)
+	l.Infof("sent %d alerts, waiting for state to settle...", nAlerts)
 	for {
 		time.Sleep(1 * time.Second)
 		nNotifications := webhookConsumer.GetNNotifications()
 		if nAlerts == nNotifications {
-			log.Infof("alerts / notifications equalized (%d/%d), continuing...", nAlerts, nNotifications)
+			l.Infof("alerts / notifications equalized (%d/%d), continuing...", nAlerts, nNotifications)
 			break
 		}
 	}
 
 	for i := range nRestarts {
-		log.Infof("restarting Alertmanager instances (iteration %d/%d)...", i+1, nRestarts)
+		l.Infof("restarting Alertmanager instances (iteration %d/%d)...", i+1, nRestarts)
 		wg := &sync.WaitGroup{}
 		for k := range nInstances {
 			wg.Add(1)
 			go func(j int) {
 				if err := ams[j].Restart(); err != nil {
-					log.Errorf("error restarting Alertmanager instance: %v", err)
+					l.Errorf("error restarting Alertmanager instance: %v", err)
 				}
 				wg.Done()
 			}(k)
@@ -216,7 +215,7 @@ func trackAMs(ams AMInstances, wc *webhookConsumer) {
 
 		healthy, ready := ams.Health() == nil, ams.Ready() == nil
 		if !healthy || !ready {
-			log.Warnf("alertmanager instances not healthy or ready (healthy: %v, ready: %v)", healthy, ready)
+			l.Warnf("alertmanager instances not healthy or ready (healthy: %v, ready: %v)", healthy, ready)
 			continue
 		}
 
@@ -224,13 +223,13 @@ func trackAMs(ams AMInstances, wc *webhookConsumer) {
 			curAlerts[i] = -1
 			alerts, err := ams[i].GetAlerts()
 			if err != nil {
-				log.Warnf("error getting alerts for instance %d: %v", i, err)
+				l.Warnf("error getting alerts for instance %d: %v", i, err)
 				continue
 			}
 			curAlerts[i] = len(alerts)
 		}
 
-		log.Infof("alerts per AM: %v, %d notifications so far", curAlerts, wc.GetNNotifications())
+		l.Infof("alerts per AM: %v, %d notifications so far", curAlerts, wc.GetNNotifications())
 	}
 }
 
@@ -264,7 +263,7 @@ func constructArgs(tempDir string, nInstances, id int) (string, []string) {
 
 func TestMain(m *testing.M) {
 	var err error
-	log, err = logging.New(
+	l, err = logging.New(
 		logging.LevelInfo,
 		logging.EncodingLogfmt,
 	)
