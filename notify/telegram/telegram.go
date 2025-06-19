@@ -22,10 +22,13 @@ import (
 	"strings"
 
 	commoncfg "github.com/prometheus/common/config"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"gopkg.in/telebot.v3"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -64,6 +67,9 @@ func New(conf *config.TelegramConfig, t *template.Template, l *slog.Logger, http
 }
 
 func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "telegram.notify")
+	defer span.End()
+
 	var (
 		err  error
 		data = notify.GetTemplateData(ctx, n.tmpl, alert, n.logger)
@@ -72,26 +78,56 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 
 	if n.conf.ParseMode == "HTML" {
 		tmpl = notify.TmplHTML(n.tmpl, data, &err)
+		span.SetAttributes(attribute.Bool("telegram.html_mode", true))
+	} else {
+		span.SetAttributes(attribute.Bool("telegram.html_mode", false))
 	}
 
 	key, ok := notify.GroupKey(ctx)
 	if !ok {
-		return false, fmt.Errorf("group key missing")
+		err := fmt.Errorf("group key missing")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "group key missing")
+		return false, err
 	}
+
+	span.SetAttributes(
+		attribute.String("telegram.group_key", key),
+		attribute.Int("telegram.alerts_count", len(alert)),
+		attribute.String("telegram.parse_mode", n.conf.ParseMode),
+		attribute.Int64("telegram.chat_id", n.conf.ChatID),
+		attribute.Bool("telegram.disable_notifications", n.conf.DisableNotifications),
+		attribute.Int("telegram.message_thread_id", n.conf.MessageThreadID),
+	)
+
+	telemetry.AddEvent(ctx, "telegram.notification_start")
 
 	messageText, truncated := notify.TruncateInRunes(tmpl(n.conf.Message), maxMessageLenRunes)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "template execution failed")
 		return false, err
 	}
 	if truncated {
+		telemetry.AddEvent(ctx, "telegram.message_truncated", 
+			attribute.Int("max_runes", maxMessageLenRunes))
 		n.logger.Warn("Truncated message", "alert", key, "max_runes", maxMessageLenRunes)
 	}
 
+	span.SetAttributes(
+		attribute.Int("telegram.message_length", len(messageText)),
+		attribute.Bool("telegram.message_truncated", truncated),
+	)
+
+	telemetry.AddEvent(ctx, "telegram.getting_bot_token")
 	n.client.Token, err = n.getBotToken()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to get bot token")
 		return true, err
 	}
 
+	telemetry.AddEvent(ctx, "telegram.sending_message")
 	message, err := n.client.Send(telebot.ChatID(n.conf.ChatID), messageText, &telebot.SendOptions{
 		DisableNotification:   n.conf.DisableNotifications,
 		DisableWebPagePreview: true,
@@ -99,8 +135,20 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 		ParseMode:             n.conf.ParseMode,
 	})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to send message")
+		telemetry.AddEvent(ctx, "telegram.notification_failed", attribute.String("error", err.Error()))
 		return true, err
 	}
+
+	span.SetAttributes(
+		attribute.Int("telegram.message_id", message.ID),
+		attribute.Int64("telegram.response_chat_id", message.Chat.ID),
+	)
+	span.SetStatus(codes.Ok, "message sent")
+	telemetry.AddEvent(ctx, "telegram.notification_success", 
+		attribute.Int("message_id", message.ID))
+
 	n.logger.Debug("Telegram message successfully published", "message_id", message.ID, "chat_id", message.Chat.ID)
 
 	return false, nil
