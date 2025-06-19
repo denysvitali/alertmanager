@@ -25,9 +25,12 @@ import (
 	"strings"
 
 	commoncfg "github.com/prometheus/common/config"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -138,26 +141,46 @@ func getToken(c *config.RocketchatConfig) (string, error) {
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "rocketchat.notify")
+	defer span.End()
+
 	var err error
 
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 	tmplText := notify.TmplText(n.tmpl, data, &err)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "template execution failed")
 		return false, err
 	}
+
+	span.SetAttributes(
+		attribute.Int("rocketchat.alerts_count", len(as)),
+	)
+
+	telemetry.AddEvent(ctx, "rocketchat.notification_start")
+
 	title := tmplText(n.conf.Title)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "title template execution failed")
 		return false, err
 	}
 
 	title, truncated := notify.TruncateInRunes(title, maxTitleLenRunes)
 	if truncated {
+		telemetry.AddEvent(ctx, "rocketchat.title_truncated",
+			attribute.Int("max_runes", maxTitleLenRunes))
 		key, err := notify.ExtractGroupKey(ctx)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "failed to extract group key")
 			return false, err
 		}
 		n.logger.Warn("Truncated title", "key", key, "max_runes", maxTitleLenRunes)
 	}
+
+	telemetry.AddEvent(ctx, "rocketchat.creating_attachment")
 	att := &Attachment{
 		Title:     title,
 		TitleLink: tmplText(n.conf.TitleLink),
@@ -166,8 +189,10 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		ThumbURL:  tmplText(n.conf.ThumbURL),
 		Color:     tmplText(n.conf.Color),
 	}
+
 	numFields := len(n.conf.Fields)
 	if numFields > 0 {
+		telemetry.AddEvent(ctx, "rocketchat.processing_fields", attribute.Int("fields_count", numFields))
 		fields := make([]config.RocketchatAttachmentField, numFields)
 		for index, field := range n.conf.Fields {
 			// Check if short was defined for the field otherwise fallback to the global setting
@@ -187,8 +212,10 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		}
 		att.Fields = fields
 	}
+
 	numActions := len(n.conf.Actions)
 	if numActions > 0 {
+		telemetry.AddEvent(ctx, "rocketchat.processing_actions", attribute.Int("actions_count", numActions))
 		actions := make([]config.RocketchatAttachmentAction, numActions)
 		for index, action := range n.conf.Actions {
 			actions[index] = config.RocketchatAttachmentAction{
@@ -201,42 +228,77 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		att.Actions = actions
 	}
 
+	channel := tmplText(n.conf.Channel)
 	body := &PostMessage{
-		Channel:     tmplText(n.conf.Channel),
+		Channel:     channel,
 		Emoji:       tmplText(n.conf.Emoji),
 		Avatar:      tmplText(n.conf.IconURL),
 		Attachments: []Attachment{*att},
 	}
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "message body creation failed")
 		return false, err
 	}
 
+	span.SetAttributes(
+		attribute.String("rocketchat.channel", channel),
+		attribute.Int("rocketchat.title_length", len(title)),
+		attribute.Bool("rocketchat.title_truncated", truncated),
+		attribute.Int("rocketchat.fields_count", numFields),
+		attribute.Int("rocketchat.actions_count", numActions),
+	)
+
+	telemetry.AddEvent(ctx, "rocketchat.encoding_message")
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(body); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "JSON encoding failed")
 		return false, err
 	}
+
 	url := n.conf.APIURL.JoinPath("api/v1/chat.postMessage").String()
+	span.SetAttributes(attribute.String("rocketchat.api_url", url))
+
+	telemetry.AddEvent(ctx, "rocketchat.sending_request")
 	resp, err := n.postJSONFunc(ctx, n.client, url, &buf)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "HTTP request failed")
 		return true, notify.RedactURL(err)
 	}
 	defer notify.Drain(resp)
+
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+	telemetry.AddEvent(ctx, "rocketchat.response_received", attribute.Int("status_code", resp.StatusCode))
 
 	// Use a retrier to generate an error message for non-200 responses and
 	// classify them as retriable or not.
 	retry, err := n.retrier.Check(resp.StatusCode, resp.Body)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "retry check failed")
 		err = fmt.Errorf("channel %q: %w", body.Channel, err)
+		telemetry.AddEvent(ctx, "rocketchat.notification_failed",
+			attribute.String("error", err.Error()),
+			attribute.Bool("retry", retry))
 		return retry, notify.NewErrorWithReason(notify.GetFailureReasonFromStatusCode(resp.StatusCode), err)
 	}
 
 	// Rocketchat web API might return errors with a 200 response code.
 	retry, err = checkResponseError(resp)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "API response error")
 		err = fmt.Errorf("channel %q: %w", body.Channel, err)
+		telemetry.AddEvent(ctx, "rocketchat.api_error",
+			attribute.String("error", err.Error()),
+			attribute.Bool("retry", retry))
 		return retry, notify.NewErrorWithReason(notify.ClientErrorReason, err)
 	}
 
+	span.SetStatus(codes.Ok, "notification sent")
+	telemetry.AddEvent(ctx, "rocketchat.notification_success")
 	return retry, nil
 }
 
