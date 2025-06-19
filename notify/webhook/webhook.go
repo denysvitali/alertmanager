@@ -79,7 +79,7 @@ func truncateAlerts(maxAlerts uint64, alerts []*types.Alert) ([]*types.Alert, ui
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, alerts ...*types.Alert) (bool, error) {
 	ctx, span := telemetry.StartSpan(ctx, "notification.webhook.send",
-		telemetry.WithNotificationAttributes("webhook", "webhook")...)
+		telemetry.WithNotificationAlertAttributes("webhook", "webhook", alerts)...)
 	defer span.End()
 
 	alerts, numTruncated := truncateAlerts(n.conf.MaxAlerts, alerts)

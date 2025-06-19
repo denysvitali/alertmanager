@@ -64,7 +64,8 @@ func New(c *config.SNSConfig, t *template.Template, l *slog.Logger, httpOpts ...
 }
 
 func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "sns.notify")
+	ctx, span := telemetry.StartSpan(ctx, "notification.sns.send",
+		telemetry.WithNotificationAlertAttributes("sns", "sns", alert)...)
 	defer span.End()
 
 	var (

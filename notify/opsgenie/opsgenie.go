@@ -97,7 +97,8 @@ type opsGenieUpdateDescriptionMessage struct {
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "opsgenie.notify")
+	ctx, span := telemetry.StartSpan(ctx, "notification.opsgenie.send",
+		telemetry.WithNotificationAlertAttributes("opsgenie", "opsgenie", as)...)
 	defer span.End()
 
 	span.SetAttributes(attribute.Int("opsgenie.alerts_count", len(as)))
