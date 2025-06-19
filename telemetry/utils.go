@@ -39,7 +39,7 @@ const (
 	NotificationStatusKey   = "notification.status"
 
 	// Routing attributes
-	RouteMatcherKey = "route.matcher"
+	RouteMatcherKey  = "route.matcher"
 	RouteReceiverKey = "route.receiver"
 	RouteGroupByKey  = "route.group_by"
 
@@ -50,7 +50,7 @@ const (
 	HTTPUserAgentKey  = "http.user_agent"
 
 	// Silence attributes
-	SilenceIDKey      = "silence.id"
+	SilenceIDKey       = "silence.id"
 	SilenceMatchersKey = "silence.matchers"
 
 	// Template attributes
@@ -63,7 +63,7 @@ func StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (c
 	if tracer == nil {
 		return ctx, trace.SpanFromContext(ctx)
 	}
-	
+
 	return tracer.Start(ctx, name, trace.WithAttributes(attrs...))
 }
 
@@ -158,7 +158,7 @@ func FinishSpan(span trace.Span, err error) {
 func TraceFunc(ctx context.Context, name string, fn func(ctx context.Context) error, attrs ...attribute.KeyValue) error {
 	ctx, span := StartSpan(ctx, name, attrs...)
 	defer span.End()
-	
+
 	err := fn(ctx)
 	if err != nil {
 		SetError(ctx, err)
@@ -170,7 +170,7 @@ func TraceFunc(ctx context.Context, name string, fn func(ctx context.Context) er
 func TraceFuncWithResult[T any](ctx context.Context, name string, fn func(ctx context.Context) (T, error), attrs ...attribute.KeyValue) (T, error) {
 	ctx, span := StartSpan(ctx, name, attrs...)
 	defer span.End()
-	
+
 	result, err := fn(ctx)
 	if err != nil {
 		SetError(ctx, err)
@@ -200,7 +200,7 @@ func GetSpanID(ctx context.Context) string {
 func LogFields(ctx context.Context) []any {
 	traceID := GetTraceID(ctx)
 	spanID := GetSpanID(ctx)
-	
+
 	fields := make([]any, 0, 4)
 	if traceID != "" {
 		fields = append(fields, "trace_id", traceID)

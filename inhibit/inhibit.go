@@ -141,7 +141,7 @@ func (ih *Inhibitor) MutesWithContext(ctx context.Context, lset model.LabelSet) 
 			// If target side of rule doesn't match, we don't need to look any further.
 			continue
 		}
-		telemetry.AddEvent(ctx, "inhibit.target_match", 
+		telemetry.AddEvent(ctx, "inhibit.target_match",
 			telemetry.WithAlertAttributes("", "", i)...)
 
 		// If we are here, the target side matches. If the source side matches, too, we

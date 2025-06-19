@@ -177,7 +177,7 @@ func (d *Dispatcher) run(it provider.AlertIterator) {
 
 			now := time.Now()
 			routes := d.route.MatchWithContext(ctx, alert.Labels)
-			telemetry.AddEvent(ctx, "dispatch.route_match", 
+			telemetry.AddEvent(ctx, "dispatch.route_match",
 				telemetry.WithRouteAttributes("", []string{})...)
 
 			for _, r := range routes {

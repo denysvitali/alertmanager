@@ -178,7 +178,7 @@ func (s *Silencer) MutesWithContext(ctx context.Context, lset model.LabelSet) bo
 	// current ID slices for concurrency reasons.
 	activeIDs, pendingIDs = nil, nil
 	now := s.silences.nowUTC()
-	
+
 	telemetry.AddEvent(ctx, "silence.processing_silences",
 		telemetry.WithAlertAttributes("", "", len(allSils))...)
 

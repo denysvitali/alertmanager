@@ -47,7 +47,7 @@ type Config struct {
 // This allows users to configure OTEL via environment variables
 func Initialize(ctx context.Context, cfg Config) (func(context.Context) error, error) {
 	logger = cfg.Logger
-	
+
 	if !cfg.Enabled {
 		logger.Info("OpenTelemetry tracing disabled")
 		otel.SetTracerProvider(trace.NewNoopTracerProvider())

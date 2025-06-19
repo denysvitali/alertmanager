@@ -34,9 +34,12 @@ import (
 	"time"
 
 	commoncfg "github.com/prometheus/common/config"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -124,6 +127,19 @@ func (n *Email) auth(mechs string) (smtp.Auth, error) {
 
 // Notify implements the Notifier interface.
 func (n *Email) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "email.Notify")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("notifier.type", "email"),
+		attribute.String("email.smarthost", n.conf.Smarthost.String()),
+		attribute.Int("alerts.count", len(as)),
+		attribute.String("email.from", n.conf.From),
+		attribute.String("email.to", n.conf.To),
+	)
+	telemetry.AddEvent(ctx, "email_notification_started",
+		attribute.String("description", "Starting email notification delivery"))
+
 	var (
 		c       *smtp.Client
 		conn    net.Conn
@@ -131,8 +147,14 @@ func (n *Email) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 		success = false
 	)
 	if n.conf.Smarthost.Port == "465" {
+		telemetry.AddEvent(ctx, "email_tls_connection",
+			attribute.String("port", "465"),
+			attribute.String("type", "direct_tls"))
+
 		tlsConfig, err := commoncfg.NewTLSConfig(n.conf.TLSConfig)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "Failed to parse TLS configuration")
 			return false, fmt.Errorf("parse TLS configuration: %w", err)
 		}
 		if tlsConfig.ServerName == "" {
@@ -141,23 +163,43 @@ func (n *Email) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 
 		conn, err = tls.Dial("tcp", n.conf.Smarthost.String(), tlsConfig)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "Failed to establish TLS connection")
+			telemetry.AddEvent(ctx, "email_connection_failed",
+				attribute.String("error", err.Error()),
+				attribute.String("connection_type", "tls"))
 			return true, fmt.Errorf("establish TLS connection to server: %w", err)
 		}
 	} else {
+		telemetry.AddEvent(ctx, "email_tcp_connection",
+			attribute.String("port", n.conf.Smarthost.Port),
+			attribute.String("type", "plain_tcp"))
+
 		var (
 			d   = net.Dialer{}
 			err error
 		)
 		conn, err = d.DialContext(ctx, "tcp", n.conf.Smarthost.String())
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "Failed to establish TCP connection")
+			telemetry.AddEvent(ctx, "email_connection_failed",
+				attribute.String("error", err.Error()),
+				attribute.String("connection_type", "tcp"))
 			return true, fmt.Errorf("establish connection to server: %w", err)
 		}
 	}
+	telemetry.AddEvent(ctx, "email_connection_established")
+
 	c, err = smtp.NewClient(conn, n.conf.Smarthost.Host)
 	if err != nil {
 		conn.Close()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Failed to create SMTP client")
 		return true, fmt.Errorf("create SMTP client: %w", err)
 	}
+
+	telemetry.AddEvent(ctx, "email_smtp_client_created")
 	defer func() {
 		// Try to clean up after ourselves but don't log anything if something has failed.
 		if err := c.Quit(); success && err != nil {
@@ -166,20 +208,28 @@ func (n *Email) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 	}()
 
 	if n.conf.Hello != "" {
+		telemetry.AddEvent(ctx, "email_hello_sent",
+			attribute.String("hello", n.conf.Hello))
 		err = c.Hello(n.conf.Hello)
 		if err != nil {
+			span.RecordError(err)
 			return true, fmt.Errorf("send EHLO command: %w", err)
 		}
 	}
 
 	// Global Config guarantees RequireTLS is not nil.
 	if *n.conf.RequireTLS {
+		telemetry.AddEvent(ctx, "email_starttls_required")
 		if ok, _ := c.Extension("STARTTLS"); !ok {
-			return true, fmt.Errorf("'require_tls' is true (default) but %q does not advertise the STARTTLS extension", n.conf.Smarthost)
+			err := fmt.Errorf("'require_tls' is true (default) but %q does not advertise the STARTTLS extension", n.conf.Smarthost)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "STARTTLS not supported")
+			return true, err
 		}
 
 		tlsConf, err := commoncfg.NewTLSConfig(n.conf.TLSConfig)
 		if err != nil {
+			span.RecordError(err)
 			return false, fmt.Errorf("parse TLS configuration: %w", err)
 		}
 		if tlsConf.ServerName == "" {
@@ -187,19 +237,30 @@ func (n *Email) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 		}
 
 		if err := c.StartTLS(tlsConf); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "STARTTLS failed")
 			return true, fmt.Errorf("send STARTTLS command: %w", err)
 		}
+		telemetry.AddEvent(ctx, "email_starttls_completed")
 	}
 
 	if ok, mech := c.Extension("AUTH"); ok {
+		telemetry.AddEvent(ctx, "email_auth_started",
+			attribute.String("mechanisms", mech))
 		auth, err := n.auth(mech)
 		if err != nil {
+			span.RecordError(err)
 			return true, fmt.Errorf("find auth mechanism: %w", err)
 		}
 		if auth != nil {
 			if err := c.Auth(auth); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "Authentication failed")
+				telemetry.AddEvent(ctx, "email_auth_failed",
+					attribute.String("error", err.Error()))
 				return true, fmt.Errorf("%T auth: %w", auth, err)
 			}
+			telemetry.AddEvent(ctx, "email_auth_completed")
 		}
 	}
 
@@ -208,38 +269,68 @@ func (n *Email) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 		data    = notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 		tmpl    = notify.TmplText(n.tmpl, data, &tmplErr)
 	)
+
+	telemetry.AddEvent(ctx, "email_template_execution_started")
+
 	from := tmpl(n.conf.From)
 	if tmplErr != nil {
+		span.RecordError(tmplErr)
+		span.SetStatus(codes.Error, "Template execution failed for 'from' field")
 		return false, fmt.Errorf("execute 'from' template: %w", tmplErr)
 	}
 	to := tmpl(n.conf.To)
 	if tmplErr != nil {
+		span.RecordError(tmplErr)
+		span.SetStatus(codes.Error, "Template execution failed for 'to' field")
 		return false, fmt.Errorf("execute 'to' template: %w", tmplErr)
 	}
 
+	telemetry.AddEvent(ctx, "email_template_execution_completed",
+		attribute.String("from", from),
+		attribute.String("to", to))
+
 	addrs, err := mail.ParseAddressList(from)
 	if err != nil {
+		span.RecordError(err)
 		return false, fmt.Errorf("parse 'from' addresses: %w", err)
 	}
 	if len(addrs) != 1 {
-		return false, fmt.Errorf("must be exactly one 'from' address (got: %d)", len(addrs))
+		err := fmt.Errorf("must be exactly one 'from' address (got: %d)", len(addrs))
+		span.RecordError(err)
+		return false, err
 	}
+
+	telemetry.AddEvent(ctx, "email_mail_command",
+		attribute.String("from_address", addrs[0].Address))
 	if err = c.Mail(addrs[0].Address); err != nil {
+		span.RecordError(err)
 		return true, fmt.Errorf("send MAIL command: %w", err)
 	}
+
 	addrs, err = mail.ParseAddressList(to)
 	if err != nil {
+		span.RecordError(err)
 		return false, fmt.Errorf("parse 'to' addresses: %w", err)
 	}
+
+	var toAddresses []string
 	for _, addr := range addrs {
+		toAddresses = append(toAddresses, addr.Address)
 		if err = c.Rcpt(addr.Address); err != nil {
+			span.RecordError(err)
 			return true, fmt.Errorf("send RCPT command: %w", err)
 		}
 	}
 
+	telemetry.AddEvent(ctx, "email_rcpt_commands_completed",
+		attribute.StringSlice("recipients", toAddresses),
+		attribute.Int("recipient_count", len(toAddresses)))
+
 	// Send the email headers and body.
+	telemetry.AddEvent(ctx, "email_data_command_started")
 	message, err := c.Data()
 	if err != nil {
+		span.RecordError(err)
 		return true, fmt.Errorf("send DATA command: %w", err)
 	}
 	closeOnce := sync.OnceValue(func() error {

@@ -161,7 +161,7 @@ func (r *Route) MatchWithContext(ctx context.Context, lset model.LabelSet) []*Ro
 		return nil
 	}
 
-	telemetry.AddEvent(ctx, "route.match_found", 
+	telemetry.AddEvent(ctx, "route.match_found",
 		telemetry.WithRouteAttributes(r.RouteOpts.Receiver, []string{})...)
 
 	var all []*Route

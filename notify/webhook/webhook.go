@@ -27,6 +27,7 @@ import (
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -77,13 +78,19 @@ func truncateAlerts(maxAlerts uint64, alerts []*types.Alert) ([]*types.Alert, ui
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, alerts ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "notification.webhook.send",
+		telemetry.WithNotificationAttributes("webhook", "webhook")...)
+	defer span.End()
+
 	alerts, numTruncated := truncateAlerts(n.conf.MaxAlerts, alerts)
+	telemetry.AddEvent(ctx, "notification.template.prepare")
 	data := notify.GetTemplateData(ctx, n.tmpl, alerts, n.logger)
 
 	groupKey, err := notify.ExtractGroupKey(ctx)
 	if err != nil {
 		// @tjhop: should we `return false, err` here as we do in most
 		// other Notify() implementations?
+		telemetry.SetError(ctx, err)
 		n.logger.Error("error extracting group key", "err", err)
 	}
 
@@ -97,7 +104,9 @@ func (n *Notifier) Notify(ctx context.Context, alerts ...*types.Alert) (bool, er
 	}
 
 	var buf bytes.Buffer
+	telemetry.AddEvent(ctx, "notification.marshal.start")
 	if err := json.NewEncoder(&buf).Encode(msg); err != nil {
+		telemetry.SetError(ctx, err)
 		return false, err
 	}
 
@@ -107,10 +116,14 @@ func (n *Notifier) Notify(ctx context.Context, alerts ...*types.Alert) (bool, er
 	} else {
 		content, err := os.ReadFile(n.conf.URLFile)
 		if err != nil {
+			telemetry.SetError(ctx, err)
 			return false, fmt.Errorf("read url_file: %w", err)
 		}
 		url = strings.TrimSpace(string(content))
 	}
+
+	// Sanitize URL for tracing (remove sensitive info)
+	telemetry.SetAttributes(ctx, telemetry.WithHTTPAttributes("POST", telemetry.SanitizeURL(url), 0)...)
 
 	if n.conf.Timeout > 0 {
 		postCtx, cancel := context.WithTimeoutCause(ctx, n.conf.Timeout, fmt.Errorf("configured webhook timeout reached (%s)", n.conf.Timeout))
@@ -118,18 +131,26 @@ func (n *Notifier) Notify(ctx context.Context, alerts ...*types.Alert) (bool, er
 		ctx = postCtx
 	}
 
+	telemetry.AddEvent(ctx, "notification.http.send")
 	resp, err := notify.PostJSON(ctx, n.client, url, &buf)
 	if err != nil {
 		if ctx.Err() != nil {
 			err = fmt.Errorf("%w: %w", err, context.Cause(ctx))
 		}
+		telemetry.SetError(ctx, err)
 		return true, notify.RedactURL(err)
 	}
 	defer notify.Drain(resp)
 
+	telemetry.SetAttributes(ctx, telemetry.WithHTTPAttributes("POST", telemetry.SanitizeURL(url), resp.StatusCode)...)
+
 	shouldRetry, err := n.retrier.Check(resp.StatusCode, resp.Body)
 	if err != nil {
+		telemetry.SetError(ctx, err)
+		telemetry.AddEvent(ctx, "notification.retry_needed")
 		return shouldRetry, notify.NewErrorWithReason(notify.GetFailureReasonFromStatusCode(resp.StatusCode), err)
 	}
+
+	telemetry.AddEvent(ctx, "notification.success")
 	return shouldRetry, err
 }

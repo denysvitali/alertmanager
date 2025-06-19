@@ -319,7 +319,7 @@ func (api *API) getAlertsHandler(params alert_ops.GetAlertsParams) middleware.Re
 func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.Responder {
 	logger := api.requestLogger(params.HTTPRequest)
 	ctx := params.HTTPRequest.Context()
-	
+
 	ctx, span := telemetry.StartSpan(ctx, "api.post_alerts",
 		telemetry.WithAlertAttributes("", "", len(params.Alerts))...)
 	defer span.End()
@@ -331,7 +331,7 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 	resolveTimeout := time.Duration(api.alertmanagerConfig.Global.ResolveTimeout)
 	api.mtx.RUnlock()
 
-	telemetry.AddEvent(ctx, "alert.processing.start", 
+	telemetry.AddEvent(ctx, "alert.processing.start",
 		telemetry.WithAlertAttributes("", "", len(alerts))...)
 
 	for _, alert := range alerts {
@@ -363,7 +363,7 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 		validAlerts    = make([]*types.Alert, 0, len(alerts))
 		validationErrs = &types.MultiError{}
 	)
-	
+
 	// Validate alerts
 	telemetry.AddEvent(ctx, "alert.validation.start")
 	for _, a := range alerts {
@@ -376,9 +376,9 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 		}
 		validAlerts = append(validAlerts, a)
 	}
-	telemetry.AddEvent(ctx, "alert.validation.complete", 
+	telemetry.AddEvent(ctx, "alert.validation.complete",
 		telemetry.WithAlertAttributes("", "", len(validAlerts))...)
-	
+
 	// Store valid alerts
 	if len(validAlerts) > 0 {
 		telemetry.AddEvent(ctx, "alert.storage.start")
