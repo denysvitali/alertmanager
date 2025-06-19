@@ -143,6 +143,17 @@ func WithRouteAttributes(receiver string, matchers []string) []attribute.KeyValu
 	return attrs
 }
 
+// WithSilenceAttributes returns silence-related attributes
+func WithSilenceAttributes(silenceID string, matcherCount int) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.Int("silence.matcher_count", matcherCount),
+	}
+	if silenceID != "" {
+		attrs = append(attrs, attribute.String(SilenceIDKey, silenceID))
+	}
+	return attrs
+}
+
 // FinishSpan finishes a span with optional error
 func FinishSpan(span trace.Span, err error) {
 	if err != nil {

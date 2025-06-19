@@ -29,6 +29,9 @@ import (
 	"github.com/hashicorp/memberlist"
 	"github.com/oklog/ulid"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
+
+	"github.com/prometheus/alertmanager/telemetry"
 )
 
 // ClusterPeer represents a single Peer in a gossip cluster.
@@ -257,13 +260,25 @@ func (p *Peer) Join(
 	reconnectInterval time.Duration,
 	reconnectTimeout time.Duration,
 ) error {
+	ctx, span := telemetry.StartSpan(context.Background(), "cluster.join",
+		attribute.Int("cluster.target_peers", len(p.resolvedPeers)),
+		attribute.String("cluster.reconnect_interval", reconnectInterval.String()),
+		attribute.String("cluster.reconnect_timeout", reconnectTimeout.String()))
+	defer span.End()
+
+	telemetry.AddEvent(ctx, "cluster.joining",
+		attribute.StringSlice("cluster.peers", p.resolvedPeers))
+
 	n, err := p.mlist.Join(p.resolvedPeers)
 	if err != nil {
+		telemetry.SetError(ctx, err)
 		p.logger.Warn("failed to join cluster", "err", err)
 		if reconnectInterval != 0 {
 			p.logger.Info(fmt.Sprintf("will retry joining cluster every %v", reconnectInterval.String()))
 		}
 	} else {
+		telemetry.AddEvent(ctx, "cluster.join_success",
+			attribute.Int("cluster.joined_peers", n))
 		p.logger.Debug("joined cluster", "peers", n)
 	}
 
@@ -471,6 +486,11 @@ func (p *Peer) refresh() {
 }
 
 func (p *Peer) peerJoin(n *memberlist.Node) {
+	ctx, span := telemetry.StartSpan(context.Background(), "cluster.peer_join",
+		attribute.String("cluster.peer.address", n.Address()),
+		attribute.String("cluster.peer.name", n.Name))
+	defer span.End()
+
 	p.peerLock.Lock()
 	defer p.peerLock.Unlock()
 
@@ -482,23 +502,31 @@ func (p *Peer) peerJoin(n *memberlist.Node) {
 			status: StatusAlive,
 			Node:   n,
 		}
+		telemetry.AddEvent(ctx, "cluster.peer.new")
 	} else {
 		oldStatus = pr.status
 		pr.Node = n
 		pr.status = StatusAlive
 		pr.leaveTime = time.Time{}
+		telemetry.AddEvent(ctx, "cluster.peer.update_existing")
 	}
 
 	p.peers[n.Address()] = pr
 	p.peerJoinCounter.Inc()
 
 	if oldStatus == StatusFailed {
+		telemetry.AddEvent(ctx, "cluster.peer.rejoined")
 		p.logger.Debug("peer rejoined", "peer", pr.Node)
 		p.failedPeers = removeOldPeer(p.failedPeers, pr.Address())
 	}
 }
 
 func (p *Peer) peerLeave(n *memberlist.Node) {
+	ctx, span := telemetry.StartSpan(context.Background(), "cluster.peer_leave",
+		attribute.String("cluster.peer.address", n.Address()),
+		attribute.String("cluster.peer.name", n.Name))
+	defer span.End()
+
 	p.peerLock.Lock()
 	defer p.peerLock.Unlock()
 
@@ -506,6 +534,7 @@ func (p *Peer) peerLeave(n *memberlist.Node) {
 	if !ok {
 		// Why are we receiving a leave notification from a node that
 		// never joined?
+		telemetry.AddEvent(ctx, "cluster.peer.leave_unknown")
 		return
 	}
 
@@ -516,9 +545,15 @@ func (p *Peer) peerLeave(n *memberlist.Node) {
 
 	p.peerLeaveCounter.Inc()
 	p.logger.Debug("peer left", "peer", pr.Node)
+	telemetry.AddEvent(ctx, "cluster.peer.left")
 }
 
 func (p *Peer) peerUpdate(n *memberlist.Node) {
+	ctx, span := telemetry.StartSpan(context.Background(), "cluster.peer_update",
+		attribute.String("cluster.peer.address", n.Address()),
+		attribute.String("cluster.peer.name", n.Name))
+	defer span.End()
+
 	p.peerLock.Lock()
 	defer p.peerLock.Unlock()
 
@@ -526,6 +561,7 @@ func (p *Peer) peerUpdate(n *memberlist.Node) {
 	if !ok {
 		// Why are we receiving an update from a node that never
 		// joined?
+		telemetry.AddEvent(ctx, "cluster.peer.update_unknown")
 		return
 	}
 
@@ -534,6 +570,7 @@ func (p *Peer) peerUpdate(n *memberlist.Node) {
 
 	p.peerUpdateCounter.Inc()
 	p.logger.Debug("peer updated", "peer", pr.Node)
+	telemetry.AddEvent(ctx, "cluster.peer.updated")
 }
 
 // AddState adds a new state that will be gossiped. It returns a channel to which

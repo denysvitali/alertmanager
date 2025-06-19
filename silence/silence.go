@@ -36,6 +36,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/promslog"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/prometheus/alertmanager/cluster"
 	"github.com/prometheus/alertmanager/matcher/compat"
@@ -621,6 +622,15 @@ func (s *Silences) setSilence(msil *pb.MeshSilence, now time.Time) error {
 // Set the specified silence. If a silence with the ID already exists and the modification
 // modifies history, the old silence gets expired and a new one is created.
 func (s *Silences) Set(sil *pb.Silence) error {
+	return s.SetWithContext(context.Background(), sil)
+}
+
+// SetWithContext sets the specified silence with tracing context.
+func (s *Silences) SetWithContext(ctx context.Context, sil *pb.Silence) error {
+	attrs := telemetry.WithSilenceAttributes(sil.Id, len(sil.Matchers))
+	_, span := telemetry.StartSpan(ctx, "silence.set", attrs...)
+	defer span.End()
+
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
@@ -630,21 +640,30 @@ func (s *Silences) Set(sil *pb.Silence) error {
 	}
 
 	if err := validateSilence(sil); err != nil {
+		telemetry.SetError(ctx, err)
 		return fmt.Errorf("invalid silence: %w", err)
 	}
 
 	prev, ok := s.getSilence(sil.Id)
 	if sil.Id != "" && !ok {
-		return ErrNotFound
+		err := ErrNotFound
+		telemetry.SetError(ctx, err)
+		return err
 	}
 
 	if ok && canUpdate(prev, sil, now) {
+		telemetry.AddEvent(ctx, "silence.update_existing")
 		sil.UpdatedAt = now
 		msil := s.toMeshSilence(sil)
 		if err := s.checkSizeLimits(msil); err != nil {
+			telemetry.SetError(ctx, err)
 			return err
 		}
-		return s.setSilence(msil, now)
+		if err := s.setSilence(msil, now); err != nil {
+			telemetry.SetError(ctx, err)
+			return err
+		}
+		return nil
 	}
 
 	// If we got here it's either a new silence or a replacing one (which would
@@ -652,15 +671,20 @@ func (s *Silences) Set(sil *pb.Silence) error {
 	// the new silence.
 	if s.limits.MaxSilences != nil {
 		if m := s.limits.MaxSilences(); m > 0 && len(s.st)+1 > m {
-			return fmt.Errorf("exceeded maximum number of silences: %d (limit: %d)", len(s.st), m)
+			err := fmt.Errorf("exceeded maximum number of silences: %d (limit: %d)", len(s.st), m)
+			telemetry.SetError(ctx, err)
+			return err
 		}
 	}
 
 	uid, err := uuid.NewV4()
 	if err != nil {
-		return fmt.Errorf("generate uuid: %w", err)
+		err = fmt.Errorf("generate uuid: %w", err)
+		telemetry.SetError(ctx, err)
+		return err
 	}
 	sil.Id = uid.String()
+	telemetry.SetAttributes(ctx, attribute.String(telemetry.SilenceIDKey, sil.Id))
 
 	if sil.StartsAt.Before(now) {
 		sil.StartsAt = now
@@ -669,18 +693,27 @@ func (s *Silences) Set(sil *pb.Silence) error {
 
 	msil := s.toMeshSilence(sil)
 	if err := s.checkSizeLimits(msil); err != nil {
+		telemetry.SetError(ctx, err)
 		return err
 	}
 
 	if ok && getState(prev, s.nowUTC()) != types.SilenceStateExpired {
 		// We cannot update the silence, expire the old one to leave a history of
 		// the silence before modification.
+		telemetry.AddEvent(ctx, "silence.expire_previous")
 		if err := s.expire(prev.Id); err != nil {
-			return fmt.Errorf("expire previous silence: %w", err)
+			err = fmt.Errorf("expire previous silence: %w", err)
+			telemetry.SetError(ctx, err)
+			return err
 		}
 	}
 
-	return s.setSilence(msil, now)
+	telemetry.AddEvent(ctx, "silence.create_new")
+	if err := s.setSilence(msil, now); err != nil {
+		telemetry.SetError(ctx, err)
+		return err
+	}
+	return nil
 }
 
 // canUpdate returns true if silence a can be updated to b without

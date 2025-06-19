@@ -14,14 +14,17 @@
 package cluster
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/hashicorp/memberlist"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/prometheus/alertmanager/cluster/clusterpb"
+	"github.com/prometheus/alertmanager/telemetry"
 )
 
 const (
@@ -151,31 +154,51 @@ func (d *delegate) NodeMeta(limit int) []byte {
 
 // NotifyMsg is the callback invoked when a user-level gossip message is received.
 func (d *delegate) NotifyMsg(b []byte) {
+	ctx, span := telemetry.StartSpan(context.Background(), "cluster.notify_msg",
+		attribute.Int("cluster.message.size", len(b)))
+	defer span.End()
+
 	d.messagesReceived.WithLabelValues(update).Inc()
 	d.messagesReceivedSize.WithLabelValues(update).Add(float64(len(b)))
 
 	var p clusterpb.Part
 	if err := proto.Unmarshal(b, &p); err != nil {
+		telemetry.SetError(ctx, err)
 		d.logger.Warn("decode broadcast", "err", err)
 		return
 	}
+
+	telemetry.AddEvent(ctx, "cluster.message.decoded",
+		attribute.String("cluster.message.key", p.Key))
 
 	d.mtx.RLock()
 	s, ok := d.states[p.Key]
 	d.mtx.RUnlock()
 
 	if !ok {
+		telemetry.AddEvent(ctx, "cluster.message.unknown_key")
 		return
 	}
 	if err := s.Merge(p.Data); err != nil {
+		telemetry.SetError(ctx, err)
 		d.logger.Warn("merge broadcast", "err", err, "key", p.Key)
 		return
 	}
+	telemetry.AddEvent(ctx, "cluster.message.merged")
 }
 
 // GetBroadcasts is called when user data messages can be broadcasted.
 func (d *delegate) GetBroadcasts(overhead, limit int) [][]byte {
+	ctx, span := telemetry.StartSpan(context.Background(), "cluster.get_broadcasts",
+		attribute.Int("cluster.broadcast.overhead", overhead),
+		attribute.Int("cluster.broadcast.limit", limit))
+	defer span.End()
+
 	msgs := d.bcast.GetBroadcasts(overhead, limit)
+
+	telemetry.AddEvent(ctx, "cluster.broadcasts.retrieved",
+		attribute.Int("cluster.broadcast.count", len(msgs)))
+
 	d.messagesSent.WithLabelValues(update).Add(float64(len(msgs)))
 	for _, m := range msgs {
 		d.messagesSentSize.WithLabelValues(update).Add(float64(len(m)))
