@@ -136,7 +136,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	title, truncated := notify.TruncateInRunes(tmpl(n.conf.Title), maxTitleLenRunes)
 	if truncated {
-		telemetry.AddEvent(ctx, "pushover.title_truncated", 
+		telemetry.AddEvent(ctx, "pushover.title_truncated",
 			attribute.Int("max_runes", maxTitleLenRunes))
 		n.logger.Warn("Truncated title", "incident", key, "max_runes", maxTitleLenRunes)
 	}
@@ -158,7 +158,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	message, truncated = notify.TruncateInRunes(message, maxMessageLenRunes)
 	if truncated {
-		telemetry.AddEvent(ctx, "pushover.message_truncated", 
+		telemetry.AddEvent(ctx, "pushover.message_truncated",
 			attribute.Int("max_runes", maxMessageLenRunes))
 		n.logger.Warn("Truncated message", "incident", key, "max_runes", maxMessageLenRunes)
 	}
@@ -172,7 +172,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	supplementaryURL, truncated := notify.TruncateInRunes(tmpl(n.conf.URL), maxURLLenRunes)
 	if truncated {
-		telemetry.AddEvent(ctx, "pushover.url_truncated", 
+		telemetry.AddEvent(ctx, "pushover.url_truncated",
 			attribute.Int("max_runes", maxURLLenRunes))
 		n.logger.Warn("Truncated URL", "incident", key, "max_runes", maxURLLenRunes)
 	}
@@ -229,7 +229,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "retry check failed")
-		telemetry.AddEvent(ctx, "pushover.notification_failed", 
+		telemetry.AddEvent(ctx, "pushover.notification_failed",
 			attribute.String("error", err.Error()),
 			attribute.Bool("retry", shouldRetry))
 		return shouldRetry, notify.NewErrorWithReason(notify.GetFailureReasonFromStatusCode(resp.StatusCode), err)

@@ -162,7 +162,7 @@ func (n *Notifier) notifyV1(
 
 	description, truncated := notify.TruncateInRunes(tmpl(n.conf.Description), maxV1DescriptionLenRunes)
 	if truncated {
-		telemetry.AddEvent(ctx, "pagerduty.description_truncated", 
+		telemetry.AddEvent(ctx, "pagerduty.description_truncated",
 			attribute.Int("max_runes", maxV1DescriptionLenRunes))
 		n.logger.Warn("Truncated description", "key", key, "max_runes", maxV1DescriptionLenRunes)
 	}
@@ -255,7 +255,7 @@ func (n *Notifier) notifyV2(
 
 	summary, truncated := notify.TruncateInRunes(tmpl(n.conf.Description), maxV2SummaryLenRunes)
 	if truncated {
-		telemetry.AddEvent(ctx, "pagerduty.summary_truncated", 
+		telemetry.AddEvent(ctx, "pagerduty.summary_truncated",
 			attribute.Int("max_runes", maxV2SummaryLenRunes))
 		n.logger.Warn("Truncated summary", "key", key, "max_runes", maxV2SummaryLenRunes)
 	}
@@ -423,7 +423,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "notification failed")
-		telemetry.AddEvent(ctx, "pagerduty.notification_failed", 
+		telemetry.AddEvent(ctx, "pagerduty.notification_failed",
 			attribute.String("error", err.Error()),
 			attribute.Bool("retry", retry))
 	} else {

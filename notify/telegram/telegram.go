@@ -109,7 +109,7 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 		return false, err
 	}
 	if truncated {
-		telemetry.AddEvent(ctx, "telegram.message_truncated", 
+		telemetry.AddEvent(ctx, "telegram.message_truncated",
 			attribute.Int("max_runes", maxMessageLenRunes))
 		n.logger.Warn("Truncated message", "alert", key, "max_runes", maxMessageLenRunes)
 	}
@@ -146,7 +146,7 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 		attribute.Int64("telegram.response_chat_id", message.Chat.ID),
 	)
 	span.SetStatus(codes.Ok, "message sent")
-	telemetry.AddEvent(ctx, "telegram.notification_success", 
+	telemetry.AddEvent(ctx, "telegram.notification_success",
 		attribute.Int("message_id", message.ID))
 
 	n.logger.Debug("Telegram message successfully published", "message_id", message.ID, "chat_id", message.Chat.ID)

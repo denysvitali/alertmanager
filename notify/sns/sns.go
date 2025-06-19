@@ -88,7 +88,7 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 		if errors.As(err, &e) {
 			span.SetAttributes(attribute.Int("aws.status_code", e.StatusCode()))
 			span.SetStatus(codes.Error, "AWS request failure")
-			telemetry.AddEvent(ctx, "sns.aws_request_failure", 
+			telemetry.AddEvent(ctx, "sns.aws_request_failure",
 				attribute.Int("status_code", e.StatusCode()),
 				attribute.String("message", e.Message()))
 			return n.retrier.Check(e.StatusCode(), strings.NewReader(e.Message()))
@@ -136,7 +136,7 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 		if errors.As(err, &e) {
 			span.SetAttributes(attribute.Int("aws.status_code", e.StatusCode()))
 			span.SetStatus(codes.Error, "publish failed")
-			telemetry.AddEvent(ctx, "sns.publish_failure", 
+			telemetry.AddEvent(ctx, "sns.publish_failure",
 				attribute.Int("status_code", e.StatusCode()),
 				attribute.String("message", e.Message()))
 
@@ -161,7 +161,7 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 	}
 
 	span.SetStatus(codes.Ok, "message published")
-	telemetry.AddEvent(ctx, "sns.notification_success", 
+	telemetry.AddEvent(ctx, "sns.notification_success",
 		attribute.String("message_id", messageID),
 		attribute.String("sequence_number", sequenceNumber))
 
