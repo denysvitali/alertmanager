@@ -19,6 +19,7 @@ package nflog
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -32,9 +33,12 @@ import (
 	"github.com/matttproud/golang_protobuf_extensions/pbutil"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/promslog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/cluster"
 	pb "github.com/prometheus/alertmanager/nflog/nflogpb"
+	"github.com/prometheus/alertmanager/telemetry"
 )
 
 // ErrNotFound is returned for empty query results.
@@ -311,7 +315,7 @@ func (l *Log) Maintenance(interval time.Duration, snapf string, stopc <-chan str
 	var doMaintenance MaintenanceFunc
 	doMaintenance = func() (int64, error) {
 		var size int64
-		if _, err := l.GC(); err != nil {
+		if _, err := l.GC(context.Background()); err != nil {
 			return size, err
 		}
 		if snapf == "" {
@@ -377,10 +381,25 @@ func stateKey(k string, r *pb.Receiver) string {
 	return fmt.Sprintf("%s:%s", k, receiverKey(r))
 }
 
-func (l *Log) Log(r *pb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error {
+func (l *Log) Log(ctx context.Context, r *pb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error {
+	ctx, span := telemetry.StartSpan(ctx, "nflog.log")
+	defer span.End()
+
 	// Write all st with the same timestamp.
 	now := l.now()
 	key := stateKey(gkey, r)
+
+	span.SetAttributes(
+		attribute.String("nflog.group_key", gkey),
+		attribute.String("nflog.receiver_group", r.GroupName),
+		attribute.String("nflog.receiver_integration", r.Integration),
+		attribute.Int("nflog.receiver_idx", int(r.Idx)),
+		attribute.Int("nflog.firing_alerts_count", len(firingAlerts)),
+		attribute.Int("nflog.resolved_alerts_count", len(resolvedAlerts)),
+		attribute.String("nflog.expiry", expiry.String()),
+	)
+
+	telemetry.AddEvent(ctx, "nflog.logging_notification")
 
 	l.mtx.Lock()
 	defer l.mtx.Unlock()
@@ -389,8 +408,13 @@ func (l *Log) Log(r *pb.Receiver, gkey string, firingAlerts, resolvedAlerts []ui
 		// Entry already exists, only overwrite if timestamp is newer.
 		// This may happen with raciness or clock-drift across AM nodes.
 		if prevle.Entry.Timestamp.After(now) {
+			telemetry.AddEvent(ctx, "nflog.entry_skipped_older_timestamp")
+			span.SetStatus(codes.Ok, "entry skipped - older timestamp")
 			return nil
 		}
+		telemetry.AddEvent(ctx, "nflog.entry_overwritten")
+	} else {
+		telemetry.AddEvent(ctx, "nflog.entry_created")
 	}
 
 	expiresAt := now.Add(l.retention)
@@ -409,30 +433,53 @@ func (l *Log) Log(r *pb.Receiver, gkey string, firingAlerts, resolvedAlerts []ui
 		ExpiresAt: expiresAt,
 	}
 
+	span.SetAttributes(
+		attribute.String("nflog.expires_at", expiresAt.Format(time.RFC3339)),
+		attribute.String("nflog.state_key", key),
+	)
+
+	telemetry.AddEvent(ctx, "nflog.marshaling_entry")
 	b, err := marshalMeshEntry(e)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "marshaling failed")
 		return err
 	}
+
 	l.st.merge(e, l.now())
+
+	telemetry.AddEvent(ctx, "nflog.broadcasting_entry")
 	l.broadcast(b)
 
+	span.SetStatus(codes.Ok, "notification logged")
+	telemetry.AddEvent(ctx, "nflog.log_success")
 	return nil
 }
 
 // GC implements the Log interface.
-func (l *Log) GC() (int, error) {
+func (l *Log) GC(ctx context.Context) (int, error) {
+	ctx, span := telemetry.StartSpan(ctx, "nflog.gc")
+	defer span.End()
+
 	start := time.Now()
 	defer func() { l.metrics.gcDuration.Observe(time.Since(start).Seconds()) }()
 
+	telemetry.AddEvent(ctx, "nflog.gc_start")
 	now := l.now()
 	var n int
 
 	l.mtx.Lock()
 	defer l.mtx.Unlock()
 
+	totalEntries := len(l.st)
+	span.SetAttributes(attribute.Int("nflog.total_entries_before_gc", totalEntries))
+
 	for k, le := range l.st {
 		if le.ExpiresAt.IsZero() {
-			return n, errors.New("unexpected zero expiration timestamp")
+			err := errors.New("unexpected zero expiration timestamp")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "invalid expiration timestamp")
+			return n, err
 		}
 		if !le.ExpiresAt.After(now) {
 			delete(l.st, k)
@@ -440,18 +487,37 @@ func (l *Log) GC() (int, error) {
 		}
 	}
 
+	span.SetAttributes(
+		attribute.Int("nflog.entries_removed", n),
+		attribute.Int("nflog.entries_remaining", len(l.st)),
+		attribute.String("nflog.gc_duration", time.Since(start).String()),
+	)
+
+	span.SetStatus(codes.Ok, "garbage collection completed")
+	telemetry.AddEvent(ctx, "nflog.gc_completed",
+		attribute.Int("removed_entries", n),
+		attribute.Int("remaining_entries", len(l.st)))
+
 	return n, nil
 }
 
 // Query implements the Log interface.
-func (l *Log) Query(params ...QueryParam) ([]*pb.Entry, error) {
+func (l *Log) Query(ctx context.Context, params ...QueryParam) ([]*pb.Entry, error) {
+	ctx, span := telemetry.StartSpan(ctx, "nflog.query")
+	defer span.End()
+
 	start := time.Now()
 	l.metrics.queriesTotal.Inc()
+
+	span.SetAttributes(attribute.Int("nflog.query_params_count", len(params)))
+	telemetry.AddEvent(ctx, "nflog.query_start")
 
 	entries, err := func() ([]*pb.Entry, error) {
 		q := &query{}
 		for _, p := range params {
 			if err := p(q); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "query parameter error")
 				return nil, err
 			}
 		}
@@ -460,20 +526,56 @@ func (l *Log) Query(params ...QueryParam) ([]*pb.Entry, error) {
 		if q.recv == nil || q.groupKey == "" {
 			// TODO(fabxc): allow more complex queries in the future.
 			// How to enable pagination?
-			return nil, errors.New("no query parameters specified")
+			err := errors.New("no query parameters specified")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "insufficient query parameters")
+			return nil, err
 		}
 
+		span.SetAttributes(
+			attribute.String("nflog.query_group_key", q.groupKey),
+			attribute.String("nflog.query_receiver_group", q.recv.GroupName),
+			attribute.String("nflog.query_receiver_integration", q.recv.Integration),
+			attribute.Int("nflog.query_receiver_idx", int(q.recv.Idx)),
+		)
+
+		telemetry.AddEvent(ctx, "nflog.querying_state")
 		l.mtx.RLock()
 		defer l.mtx.RUnlock()
 
-		if le, ok := l.st[stateKey(q.groupKey, q.recv)]; ok {
+		stateKey := stateKey(q.groupKey, q.recv)
+		span.SetAttributes(attribute.String("nflog.state_key", stateKey))
+
+		if le, ok := l.st[stateKey]; ok {
+			span.SetAttributes(
+				attribute.String("nflog.entry_timestamp", le.Entry.Timestamp.Format(time.RFC3339)),
+				attribute.String("nflog.entry_expires_at", le.ExpiresAt.Format(time.RFC3339)),
+				attribute.Int("nflog.entry_firing_alerts", len(le.Entry.FiringAlerts)),
+				attribute.Int("nflog.entry_resolved_alerts", len(le.Entry.ResolvedAlerts)),
+			)
+			telemetry.AddEvent(ctx, "nflog.entry_found")
 			return []*pb.Entry{le.Entry}, nil
 		}
+
+		telemetry.AddEvent(ctx, "nflog.entry_not_found")
 		return nil, ErrNotFound
 	}()
+
 	if err != nil {
 		l.metrics.queryErrorsTotal.Inc()
+		span.RecordError(err)
+		if err == ErrNotFound {
+			span.SetStatus(codes.Ok, "entry not found")
+		} else {
+			span.SetStatus(codes.Error, "query failed")
+		}
+		telemetry.AddEvent(ctx, "nflog.query_failed", attribute.String("error", err.Error()))
+	} else {
+		span.SetStatus(codes.Ok, "query successful")
+		span.SetAttributes(attribute.Int("nflog.entries_returned", len(entries)))
+		telemetry.AddEvent(ctx, "nflog.query_success", attribute.Int("entries_count", len(entries)))
 	}
+
 	l.metrics.queryDuration.Observe(time.Since(start).Seconds())
 	return entries, err
 }
