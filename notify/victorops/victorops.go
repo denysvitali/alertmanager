@@ -71,7 +71,8 @@ const (
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "victorops.notify")
+	ctx, span := telemetry.StartSpan(ctx, "notification.victorops.send",
+		telemetry.WithNotificationAlertAttributes("victorops", "victorops", as)...)
 	defer span.End()
 
 	var err error

@@ -70,7 +70,8 @@ type webhook struct {
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "webex.notify")
+	ctx, span := telemetry.StartSpan(ctx, "notification.webex.send",
+		telemetry.WithNotificationAlertAttributes("webex", "webex", as)...)
 	defer span.End()
 
 	key, err := notify.ExtractGroupKey(ctx)

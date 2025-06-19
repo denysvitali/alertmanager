@@ -67,7 +67,8 @@ func New(conf *config.TelegramConfig, t *template.Template, l *slog.Logger, http
 }
 
 func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "telegram.notify")
+	ctx, span := telemetry.StartSpan(ctx, "notification.telegram.send",
+		telemetry.WithNotificationAlertAttributes("telegram", "telegram", alert)...)
 	defer span.End()
 
 	var (

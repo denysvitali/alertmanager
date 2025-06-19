@@ -26,6 +26,7 @@ import (
 
 	commoncfg "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
@@ -105,8 +106,14 @@ func New(c *config.MSTeamsV2Config, t *template.Template, l *slog.Logger, httpOp
 }
 
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "notification.msteamsv2.send",
+		telemetry.WithNotificationAlertAttributes("msteamsv2", "msteamsv2", as)...)
+	defer span.End()
+
 	key, err := notify.ExtractGroupKey(ctx)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to extract group key")
 		return false, err
 	}
 

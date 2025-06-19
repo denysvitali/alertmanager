@@ -141,7 +141,8 @@ func getToken(c *config.RocketchatConfig) (string, error) {
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "rocketchat.notify")
+	ctx, span := telemetry.StartSpan(ctx, "notification.rocketchat.send",
+		telemetry.WithNotificationAlertAttributes("rocketchat", "rocketchat", as)...)
 	defer span.End()
 
 	var err error

@@ -83,7 +83,8 @@ func New(c *config.MSTeamsConfig, t *template.Template, l *slog.Logger, httpOpts
 }
 
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "msteams.notify")
+	ctx, span := telemetry.StartSpan(ctx, "notification.msteams.send",
+		telemetry.WithNotificationAlertAttributes("msteams", "msteams", as)...)
 	defer span.End()
 
 	key, err := notify.ExtractGroupKey(ctx)

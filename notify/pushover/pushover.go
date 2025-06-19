@@ -71,7 +71,8 @@ func New(c *config.PushoverConfig, t *template.Template, l *slog.Logger, httpOpt
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "pushover.notify")
+	ctx, span := telemetry.StartSpan(ctx, "notification.pushover.send",
+		telemetry.WithNotificationAlertAttributes("pushover", "pushover", as)...)
 	defer span.End()
 
 	key, ok := notify.GroupKey(ctx)

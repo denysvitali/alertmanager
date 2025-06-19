@@ -93,7 +93,8 @@ type webhookEmbed struct {
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "discord.notify")
+	ctx, span := telemetry.StartSpan(ctx, "notification.discord.send",
+		telemetry.WithNotificationAlertAttributes("discord", "discord", as)...)
 	defer span.End()
 
 	key, err := notify.ExtractGroupKey(ctx)
