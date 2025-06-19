@@ -431,11 +431,18 @@ func (n *Email) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 	}
 
 	// Complete the message and await response.
+	telemetry.AddEvent(ctx, "email_message_finalization")
 	if err = closeOnce(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "Email delivery failed")
+		telemetry.AddEvent(ctx, "email_delivery_failed",
+			attribute.String("error", err.Error()))
 		return true, fmt.Errorf("delivery failure: %w", err)
 	}
 
 	success = true
+	telemetry.AddEvent(ctx, "email_delivery_successful")
+	span.SetStatus(codes.Ok, "Email delivered successfully")
 	return false, nil
 }
 
