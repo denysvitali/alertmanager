@@ -19,6 +19,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/prometheus/alertmanager/types"
 )
 
 // Common attribute keys for AlertManager tracing
@@ -151,6 +153,34 @@ func WithSilenceAttributes(silenceID string, matcherCount int) []attribute.KeyVa
 	if silenceID != "" {
 		attrs = append(attrs, attribute.String(SilenceIDKey, silenceID))
 	}
+	return attrs
+}
+
+// WithNotificationAlertAttributes returns notification-related attributes including alert information
+func WithNotificationAlertAttributes(receiver, notificationType string, alerts []*types.Alert) []attribute.KeyValue {
+	attrs := []attribute.KeyValue{
+		attribute.String(NotificationReceiverKey, receiver),
+		attribute.String(NotificationTypeKey, notificationType),
+		attribute.Int(AlertCountKey, len(alerts)),
+	}
+
+	if len(alerts) > 0 {
+		// Add the first alert's name and fingerprint for tracing
+		if alerts[0].Labels["alertname"] != "" {
+			attrs = append(attrs, attribute.String(AlertNameKey, string(alerts[0].Labels["alertname"])))
+		}
+		attrs = append(attrs, attribute.String(AlertFingerprintKey, alerts[0].Fingerprint().String()))
+
+		// If there are multiple alerts, add fingerprints of all alerts
+		if len(alerts) > 1 {
+			fingerprints := make([]string, len(alerts))
+			for i, alert := range alerts {
+				fingerprints[i] = alert.Fingerprint().String()
+			}
+			attrs = append(attrs, attribute.StringSlice("alert.fingerprints", fingerprints))
+		}
+	}
+
 	return attrs
 }
 

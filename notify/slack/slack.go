@@ -95,7 +95,7 @@ type attachment struct {
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
 	ctx, span := telemetry.StartSpan(ctx, "notification.slack.send",
-		telemetry.WithNotificationAttributes("slack", "slack")...)
+		telemetry.WithNotificationAlertAttributes("slack", "slack", as)...)
 	defer span.End()
 
 	var err error

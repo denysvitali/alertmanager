@@ -127,13 +127,12 @@ func (n *Email) auth(mechs string) (smtp.Auth, error) {
 
 // Notify implements the Notifier interface.
 func (n *Email) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "email.Notify")
+	ctx, span := telemetry.StartSpan(ctx, "email.Notify",
+		telemetry.WithNotificationAlertAttributes("email", "email", as)...)
 	defer span.End()
 
 	span.SetAttributes(
-		attribute.String("notifier.type", "email"),
 		attribute.String("email.smarthost", n.conf.Smarthost.String()),
-		attribute.Int("alerts.count", len(as)),
 		attribute.String("email.from", n.conf.From),
 		attribute.String("email.to", n.conf.To),
 	)

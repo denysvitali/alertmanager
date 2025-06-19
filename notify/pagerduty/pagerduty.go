@@ -368,7 +368,8 @@ func (n *Notifier) notifyV2(
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
-	ctx, span := telemetry.StartSpan(ctx, "pagerduty.notify")
+	ctx, span := telemetry.StartSpan(ctx, "pagerduty.notify",
+		telemetry.WithNotificationAlertAttributes("pagerduty", "pagerduty", as)...)
 	defer span.End()
 
 	key, err := notify.ExtractGroupKey(ctx)
