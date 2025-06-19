@@ -17,6 +17,7 @@ package silence
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,7 @@ import (
 	"github.com/prometheus/alertmanager/matcher/compat"
 	"github.com/prometheus/alertmanager/pkg/labels"
 	pb "github.com/prometheus/alertmanager/silence/silencepb"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/types"
 )
 
@@ -111,6 +113,14 @@ func NewSilencer(s *Silences, m types.AlertMarker, l *slog.Logger) *Silencer {
 
 // Mutes implements the Muter interface.
 func (s *Silencer) Mutes(lset model.LabelSet) bool {
+	return s.MutesWithContext(context.Background(), lset)
+}
+
+// MutesWithContext implements the Muter interface with tracing context.
+func (s *Silencer) MutesWithContext(ctx context.Context, lset model.LabelSet) bool {
+	ctx, span := telemetry.StartSpan(ctx, "silence.mutes")
+	defer span.End()
+
 	fp := lset.Fingerprint()
 	activeIDs, pendingIDs, markerVersion, _ := s.marker.Silenced(fp)
 
@@ -119,6 +129,8 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 		allSils    []*pb.Silence
 		newVersion = markerVersion
 	)
+
+	telemetry.AddEvent(ctx, "silence.check_version")
 	if markerVersion == s.silences.Version() {
 		totalSilences := len(activeIDs) + len(pendingIDs)
 		// No new silences added, just need to check which of the old
@@ -127,8 +139,10 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 		if totalSilences == 0 {
 			// Super fast path: No silences ever applied to this
 			// alert, none have been added. We are done.
+			telemetry.AddEvent(ctx, "silence.fast_path_no_silences")
 			return false
 		}
+		telemetry.AddEvent(ctx, "silence.fast_path_check_existing")
 		// This is still a quite fast path: No silences have been added,
 		// we only need to check which of the applicable silences are
 		// currently active. Note that newVersion is left at
@@ -141,6 +155,7 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 			QState(types.SilenceStateActive, types.SilenceStatePending),
 		)
 	} else {
+		telemetry.AddEvent(ctx, "silence.full_query_needed")
 		// New silences have been added, do a full query.
 		allSils, newVersion, err = s.silences.Query(
 			QState(types.SilenceStateActive, types.SilenceStatePending),
@@ -148,10 +163,12 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 		)
 	}
 	if err != nil {
+		telemetry.SetError(ctx, err)
 		s.logger.Error("Querying silences failed, alerts might not get silenced correctly", "err", err)
 	}
 	if len(allSils) == 0 {
 		// Easy case, neither active nor pending silences anymore.
+		telemetry.AddEvent(ctx, "silence.no_silences_found")
 		s.marker.SetActiveOrSilenced(fp, newVersion, nil, nil)
 		return false
 	}
@@ -161,6 +178,10 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 	// current ID slices for concurrency reasons.
 	activeIDs, pendingIDs = nil, nil
 	now := s.silences.nowUTC()
+	
+	telemetry.AddEvent(ctx, "silence.processing_silences",
+		telemetry.WithAlertAttributes("", "", len(allSils))...)
+
 	for _, sil := range allSils {
 		switch getState(sil, now) {
 		case types.SilenceStatePending:
@@ -183,7 +204,14 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 
 	s.marker.SetActiveOrSilenced(fp, newVersion, activeIDs, pendingIDs)
 
-	return len(activeIDs) > 0
+	isActive := len(activeIDs) > 0
+	if isActive {
+		telemetry.AddEvent(ctx, "silence.silenced")
+	} else {
+		telemetry.AddEvent(ctx, "silence.not_silenced")
+	}
+
+	return isActive
 }
 
 // Silences holds a silence state that can be modified, queried, and snapshot.
