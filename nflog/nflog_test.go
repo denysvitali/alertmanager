@@ -15,6 +15,7 @@ package nflog
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -338,17 +339,18 @@ func TestQuery(t *testing.T) {
 	}
 
 	recv := new(pb.Receiver)
+	ctx := context.TODO()
 
 	// no key param
-	_, err = nl.Query(QGroupKey("key"))
+	_, err = nl.Query(ctx, QGroupKey("key"))
 	require.EqualError(t, err, "no query parameters specified")
 
 	// no recv param
-	_, err = nl.Query(QReceiver(recv))
+	_, err = nl.Query(ctx, QReceiver(recv))
 	require.EqualError(t, err, "no query parameters specified")
 
 	// no entry
-	_, err = nl.Query(QGroupKey("nonexistentkey"), QReceiver(recv))
+	_, err = nl.Query(ctx, QGroupKey("nonexistentkey"), QReceiver(recv))
 	require.EqualError(t, err, "not found")
 
 	// existing entry
@@ -358,7 +360,7 @@ func TestQuery(t *testing.T) {
 	err = nl.Log(recv, "key", firingAlerts, resolvedAlerts, 0)
 	require.NoError(t, err, "logging notification failed")
 
-	entries, err := nl.Query(QGroupKey("key"), QReceiver(recv))
+	entries, err := nl.Query(ctx, QGroupKey("key"), QReceiver(recv))
 	require.NoError(t, err, "querying nflog failed")
 	entry := entries[0]
 	require.EqualValues(t, firingAlerts, entry.FiringAlerts)
