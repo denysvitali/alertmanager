@@ -75,6 +75,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	defer span.End()
 
 	var err error
+	telemetry.AddEvent(ctx, "victorops.template_data_preparation")
 	var (
 		data   = notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 		tmpl   = notify.TmplText(n.tmpl, data, &err)
@@ -102,6 +103,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		apiKey = strings.TrimSpace(string(content))
 	}
 
+	telemetry.AddEvent(ctx, "victorops.template_execution")
 	apiURL.Path += fmt.Sprintf("%s/%s", apiKey, tmpl(n.conf.RoutingKey))
 	if err != nil {
 		span.RecordError(err)

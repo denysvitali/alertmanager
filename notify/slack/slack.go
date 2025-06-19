@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	commoncfg "github.com/prometheus/common/config"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
@@ -98,6 +99,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	defer span.End()
 
 	var err error
+	telemetry.AddEvent(ctx, "slack.template_data_preparation")
 	var (
 		data     = notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 		tmplText = notify.TmplText(n.tmpl, data, &err)
@@ -189,7 +191,11 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		LinkNames:   n.conf.LinkNames,
 		Attachments: []attachment{*att},
 	}
+
+	telemetry.AddEvent(ctx, "slack.template_execution_completed")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "template execution failed")
 		return false, err
 	}
 

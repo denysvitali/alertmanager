@@ -102,6 +102,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	n.logger.Debug("extracted group key", "key", key)
 
+	telemetry.AddEvent(ctx, "msteams.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 	tmpl := notify.TmplText(n.tmpl, data, &err)
 	if err != nil {
@@ -112,6 +113,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	telemetry.AddEvent(ctx, "msteams.processing_content")
 
+	telemetry.AddEvent(ctx, "msteams.template_execution")
 	title := tmpl(n.conf.Title)
 	if err != nil {
 		span.RecordError(err)

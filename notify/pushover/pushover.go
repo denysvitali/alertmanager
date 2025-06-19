@@ -81,6 +81,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		span.SetStatus(codes.Error, "group key missing")
 		return false, err
 	}
+	telemetry.AddEvent(ctx, "pushover.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 
 	span.SetAttributes(
@@ -97,6 +98,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		err     error
 		message string
 	)
+	telemetry.AddEvent(ctx, "pushover.template_processing")
 	tmpl := notify.TmplText(n.tmpl, data, &err)
 	tmplHTML := notify.TmplHTML(n.tmpl, data, &err)
 
@@ -184,6 +186,13 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	parameters.Add("expire", fmt.Sprintf("%d", int64(time.Duration(n.conf.Expire).Seconds())))
 	parameters.Add("device", tmpl(n.conf.Device))
 	parameters.Add("sound", tmpl(n.conf.Sound))
+
+	telemetry.AddEvent(ctx, "pushover.template_execution_completed")
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "template execution failed")
+		return false, err
+	}
 
 	newttl := int64(time.Duration(n.conf.TTL).Seconds())
 	if newttl > 0 {

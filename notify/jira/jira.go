@@ -31,6 +31,7 @@ import (
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -76,13 +77,18 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	var (
 		alerts = types.Alerts(as...)
 
-		tmplTextErr  error
-		data         = notify.GetTemplateData(ctx, n.tmpl, as, logger)
-		tmplText     = notify.TmplText(n.tmpl, data, &tmplTextErr)
-		tmplTextFunc = func(tmpl string) (string, error) {
-			return tmplText(tmpl), tmplTextErr
-		}
+		tmplTextErr error
+	)
 
+	telemetry.AddEvent(ctx, "jira.template_data_preparation")
+	data := notify.GetTemplateData(ctx, n.tmpl, as, logger)
+	telemetry.AddEvent(ctx, "jira.template_processing")
+	tmplText := notify.TmplText(n.tmpl, data, &tmplTextErr)
+	tmplTextFunc := func(tmpl string) (string, error) {
+		return tmplText(tmpl), tmplTextErr
+	}
+
+	var (
 		path   = "issue"
 		method = http.MethodPost
 	)

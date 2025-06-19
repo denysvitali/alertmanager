@@ -89,6 +89,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	n.logger.Debug("extracted group key", "key", key)
 
+	telemetry.AddEvent(ctx, "webex.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 	tmpl := notify.TmplText(n.tmpl, data, &err)
 	if err != nil {
@@ -97,6 +98,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		return false, err
 	}
 
+	telemetry.AddEvent(ctx, "webex.template_execution")
 	message := tmpl(n.conf.Message)
 	if err != nil {
 		span.RecordError(err)

@@ -184,12 +184,15 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 		span.SetStatus(codes.Error, "failed to extract group key")
 		return nil, false, err
 	}
+	telemetry.AddEvent(ctx, "opsgenie.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 
 	n.logger.Debug("extracted group key", "key", key)
 
+	telemetry.AddEvent(ctx, "opsgenie.template_processing")
 	tmpl := notify.TmplText(n.tmpl, data, &err)
 
+	telemetry.AddEvent(ctx, "opsgenie.template_execution")
 	details := make(map[string]string)
 
 	for k, v := range data.CommonLabels {
@@ -377,6 +380,7 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 		apiKey = strings.TrimSpace(string(apiKey))
 	}
 
+	telemetry.AddEvent(ctx, "opsgenie.template_execution_completed")
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "template execution failed")

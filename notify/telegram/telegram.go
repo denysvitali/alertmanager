@@ -71,12 +71,14 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 	defer span.End()
 
 	var (
-		err  error
-		data = notify.GetTemplateData(ctx, n.tmpl, alert, n.logger)
-		tmpl = notify.TmplText(n.tmpl, data, &err)
+		err error
 	)
+	telemetry.AddEvent(ctx, "telegram.template_data_preparation")
+	data := notify.GetTemplateData(ctx, n.tmpl, alert, n.logger)
+	tmpl := notify.TmplText(n.tmpl, data, &err)
 
 	if n.conf.ParseMode == "HTML" {
+		telemetry.AddEvent(ctx, "telegram.html_template_processing")
 		tmpl = notify.TmplHTML(n.tmpl, data, &err)
 		span.SetAttributes(attribute.Bool("telegram.html_mode", true))
 	} else {
@@ -102,6 +104,7 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 
 	telemetry.AddEvent(ctx, "telegram.notification_start")
 
+	telemetry.AddEvent(ctx, "telegram.template_execution")
 	messageText, truncated := notify.TruncateInRunes(tmpl(n.conf.Message), maxMessageLenRunes)
 	if err != nil {
 		span.RecordError(err)

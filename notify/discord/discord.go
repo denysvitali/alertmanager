@@ -113,6 +113,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	n.logger.Debug("extracted group key", "key", key)
 
 	alerts := types.Alerts(as...)
+	telemetry.AddEvent(ctx, "discord.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 	tmpl := notify.TmplText(n.tmpl, data, &err)
 	if err != nil {
@@ -123,6 +124,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	telemetry.AddEvent(ctx, "discord.processing_content")
 
+	telemetry.AddEvent(ctx, "discord.template_execution")
 	title, truncated := notify.TruncateInRunes(tmpl(n.conf.Title), maxTitleLenRunes)
 	if err != nil {
 		span.RecordError(err)

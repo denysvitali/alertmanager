@@ -69,9 +69,10 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 
 	var (
 		tmplErr error
-		data    = notify.GetTemplateData(ctx, n.tmpl, alert, n.logger)
-		tmpl    = notify.TmplText(n.tmpl, data, &tmplErr)
 	)
+	telemetry.AddEvent(ctx, "sns.template_data_preparation")
+	data := notify.GetTemplateData(ctx, n.tmpl, alert, n.logger)
+	tmpl := notify.TmplText(n.tmpl, data, &tmplErr)
 
 	span.SetAttributes(
 		attribute.Int("sns.alerts_count", len(alert)),
@@ -97,12 +98,19 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 		return true, err
 	}
 
+	telemetry.AddEvent(ctx, "sns.template_execution")
 	telemetry.AddEvent(ctx, "sns.creating_publish_input")
 	publishInput, err := n.createPublishInput(ctx, tmpl, &tmplErr)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "publish input creation failed")
 		return true, err
+	}
+
+	if tmplErr != nil {
+		span.RecordError(tmplErr)
+		span.SetStatus(codes.Error, "template execution failed")
+		return false, tmplErr
 	}
 
 	// Add SNS-specific attributes

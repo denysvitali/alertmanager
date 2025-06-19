@@ -103,8 +103,10 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	telemetry.AddEvent(ctx, "wechat.notification_start")
 
 	n.logger.Debug("extracted group key", "key", key)
+	telemetry.AddEvent(ctx, "wechat.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 
+	telemetry.AddEvent(ctx, "wechat.template_processing")
 	tmpl := notify.TmplText(n.tmpl, data, &err)
 	if err != nil {
 		span.RecordError(err)

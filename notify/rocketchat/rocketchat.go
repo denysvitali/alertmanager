@@ -146,6 +146,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	var err error
 
+	telemetry.AddEvent(ctx, "rocketchat.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 	tmplText := notify.TmplText(n.tmpl, data, &err)
 	if err != nil {
@@ -160,6 +161,7 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	telemetry.AddEvent(ctx, "rocketchat.notification_start")
 
+	telemetry.AddEvent(ctx, "rocketchat.template_execution")
 	title := tmplText(n.conf.Title)
 	if err != nil {
 		span.RecordError(err)

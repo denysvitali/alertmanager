@@ -29,6 +29,7 @@ import (
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -111,12 +112,14 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 
 	n.logger.Debug("extracted group key", "key", key)
 
+	telemetry.AddEvent(ctx, "msteamsv2.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 	tmpl := notify.TmplText(n.tmpl, data, &err)
 	if err != nil {
 		return false, err
 	}
 
+	telemetry.AddEvent(ctx, "msteamsv2.template_execution")
 	title := tmpl(n.conf.Title)
 	if err != nil {
 		return false, err
