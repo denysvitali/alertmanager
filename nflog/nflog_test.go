@@ -35,6 +35,7 @@ import (
 func TestLogGC(t *testing.T) {
 	mockClock := quartz.NewMock(t)
 	now := mockClock.Now()
+	ctx := context.Background()
 	// We only care about key names and expiration timestamps.
 	newEntry := func(ts time.Time) *pb.MeshEntry {
 		return &pb.MeshEntry{
@@ -51,7 +52,7 @@ func TestLogGC(t *testing.T) {
 		clock:   mockClock,
 		metrics: newMetrics(nil),
 	}
-	n, err := l.GC()
+	n, err := l.GC(ctx)
 	require.NoError(t, err, "unexpected error in garbage collection")
 	require.Equal(t, 2, n, "unexpected number of removed entries")
 
@@ -357,7 +358,7 @@ func TestQuery(t *testing.T) {
 	firingAlerts := []uint64{1, 2, 3}
 	resolvedAlerts := []uint64{4, 5}
 
-	err = nl.Log(recv, "key", firingAlerts, resolvedAlerts, 0)
+	err = nl.Log(ctx, recv, "key", firingAlerts, resolvedAlerts, 0)
 	require.NoError(t, err, "logging notification failed")
 
 	entries, err := nl.Query(ctx, QGroupKey("key"), QReceiver(recv))
