@@ -25,9 +25,12 @@ import (
 
 	commoncfg "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -94,23 +97,67 @@ type opsGenieUpdateDescriptionMessage struct {
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "opsgenie.notify")
+	defer span.End()
+
+	span.SetAttributes(attribute.Int("opsgenie.alerts_count", len(as)))
+	telemetry.AddEvent(ctx, "opsgenie.notification_start")
+
 	requests, retry, err := n.createRequests(ctx, as...)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to create requests")
 		return retry, err
 	}
 
-	for _, req := range requests {
+	span.SetAttributes(attribute.Int("opsgenie.requests_count", len(requests)))
+	telemetry.AddEvent(ctx, "opsgenie.requests_created", attribute.Int("count", len(requests)))
+
+	for i, req := range requests {
+		_, reqSpan := telemetry.StartSpan(ctx, "opsgenie.send_request")
+		reqSpan.SetAttributes(
+			attribute.Int("opsgenie.request_index", i),
+			attribute.String("opsgenie.request_method", req.Method),
+			attribute.String("opsgenie.request_url", req.URL.Path),
+		)
+
 		req.Header.Set("User-Agent", notify.UserAgentHeader)
 		resp, err := n.client.Do(req)
 		if err != nil {
+			reqSpan.RecordError(err)
+			reqSpan.SetStatus(codes.Error, "HTTP request failed")
+			reqSpan.End()
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "HTTP request failed")
 			return true, err
 		}
+
+		reqSpan.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+		telemetry.AddEvent(ctx, "opsgenie.response_received",
+			attribute.Int("request_index", i),
+			attribute.Int("status_code", resp.StatusCode))
+
 		shouldRetry, err := n.retrier.Check(resp.StatusCode, resp.Body)
 		notify.Drain(resp)
 		if err != nil {
+			reqSpan.RecordError(err)
+			reqSpan.SetStatus(codes.Error, "retry check failed")
+			reqSpan.End()
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "request failed")
+			telemetry.AddEvent(ctx, "opsgenie.request_failed",
+				attribute.Int("request_index", i),
+				attribute.String("error", err.Error()),
+				attribute.Bool("retry", shouldRetry))
 			return shouldRetry, notify.NewErrorWithReason(notify.GetFailureReasonFromStatusCode(resp.StatusCode), err)
 		}
+
+		reqSpan.SetStatus(codes.Ok, "request successful")
+		reqSpan.End()
 	}
+
+	span.SetStatus(codes.Ok, "all requests successful")
+	telemetry.AddEvent(ctx, "opsgenie.notification_success")
 	return true, nil
 }
 
@@ -128,8 +175,13 @@ func safeSplit(s, sep string) []string {
 
 // Create requests for a list of alerts.
 func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*http.Request, bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "opsgenie.create_requests")
+	defer span.End()
+
 	key, err := notify.ExtractGroupKey(ctx)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to extract group key")
 		return nil, false, err
 	}
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
@@ -154,8 +206,16 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 		alias  = key.Hash()
 		alerts = types.Alerts(as...)
 	)
+
+	span.SetAttributes(
+		attribute.String("opsgenie.alias", alias),
+		attribute.String("opsgenie.alert_status", string(alerts.Status())),
+		attribute.Int("opsgenie.details_count", len(details)),
+	)
+
 	switch alerts.Status() {
 	case model.AlertResolved:
+		telemetry.AddEvent(ctx, "opsgenie.creating_close_request")
 		resolvedEndpointURL := n.conf.APIURL.Copy()
 		resolvedEndpointURL.Path += fmt.Sprintf("v2/alerts/%s/close", alias)
 		q := resolvedEndpointURL.Query()
@@ -164,16 +224,23 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 		msg := &opsGenieCloseMessage{Source: tmpl(n.conf.Source)}
 		var buf bytes.Buffer
 		if err := json.NewEncoder(&buf).Encode(msg); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "JSON encoding failed")
 			return nil, false, err
 		}
 		req, err := http.NewRequest("POST", resolvedEndpointURL.String(), &buf)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "request creation failed")
 			return nil, true, err
 		}
 		requests = append(requests, req.WithContext(ctx))
 	default:
+		telemetry.AddEvent(ctx, "opsgenie.creating_alert_request")
 		message, truncated := notify.TruncateInRunes(tmpl(n.conf.Message), maxMessageLenRunes)
 		if truncated {
+			telemetry.AddEvent(ctx, "opsgenie.message_truncated",
+				attribute.Int("max_runes", maxMessageLenRunes))
 			n.logger.Warn("Truncated message", "alert", key, "max_runes", maxMessageLenRunes)
 		}
 
@@ -210,6 +277,13 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 			responders = append(responders, responder)
 		}
 
+		span.SetAttributes(
+			attribute.Int("opsgenie.responders_count", len(responders)),
+			attribute.Int("opsgenie.message_length", len(message)),
+			attribute.Bool("opsgenie.message_truncated", truncated),
+			attribute.String("opsgenie.priority", tmpl(n.conf.Priority)),
+		)
+
 		msg := &opsGenieCreateMessage{
 			Alias:       alias,
 			Message:     message,
@@ -225,15 +299,22 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 		}
 		var buf bytes.Buffer
 		if err := json.NewEncoder(&buf).Encode(msg); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "JSON encoding failed")
 			return nil, false, err
 		}
 		req, err := http.NewRequest("POST", createEndpointURL.String(), &buf)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "request creation failed")
 			return nil, true, err
 		}
 		requests = append(requests, req.WithContext(ctx))
 
 		if n.conf.UpdateAlerts {
+			telemetry.AddEvent(ctx, "opsgenie.creating_update_requests")
+			span.SetAttributes(attribute.Bool("opsgenie.update_alerts", true))
+
 			updateMessageEndpointURL := n.conf.APIURL.Copy()
 			updateMessageEndpointURL.Path += fmt.Sprintf("v2/alerts/%s/message", alias)
 			q := updateMessageEndpointURL.Query()
@@ -244,10 +325,14 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 			}
 			var updateMessageBuf bytes.Buffer
 			if err := json.NewEncoder(&updateMessageBuf).Encode(updateMsgMsg); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "JSON encoding failed")
 				return nil, false, err
 			}
 			req, err := http.NewRequest("PUT", updateMessageEndpointURL.String(), &updateMessageBuf)
 			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "request creation failed")
 				return nil, true, err
 			}
 			requests = append(requests, req)
@@ -263,10 +348,14 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 
 			var updateDescriptionBuf bytes.Buffer
 			if err := json.NewEncoder(&updateDescriptionBuf).Encode(updateDescMsg); err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "JSON encoding failed")
 				return nil, false, err
 			}
 			req, err = http.NewRequest("PUT", updateDescriptionEndpointURL.String(), &updateDescriptionBuf)
 			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, "request creation failed")
 				return nil, true, err
 			}
 			requests = append(requests, req.WithContext(ctx))
@@ -277,8 +366,11 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 	if n.conf.APIKey != "" {
 		apiKey = tmpl(string(n.conf.APIKey))
 	} else {
+		telemetry.AddEvent(ctx, "opsgenie.reading_api_key_file")
 		content, err := os.ReadFile(n.conf.APIKeyFile)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "failed to read API key file")
 			return nil, false, fmt.Errorf("read key_file error: %w", err)
 		}
 		apiKey = tmpl(string(content))
@@ -286,13 +378,17 @@ func (n *Notifier) createRequests(ctx context.Context, as ...*types.Alert) ([]*h
 	}
 
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "template execution failed")
 		return nil, false, fmt.Errorf("templating error: %w", err)
 	}
 
+	telemetry.AddEvent(ctx, "opsgenie.setting_headers")
 	for _, req := range requests {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", fmt.Sprintf("GenieKey %s", apiKey))
 	}
 
+	span.SetStatus(codes.Ok, "requests created")
 	return requests, true, nil
 }
