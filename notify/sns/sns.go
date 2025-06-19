@@ -29,9 +29,12 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sns"
 	commoncfg "github.com/prometheus/common/config"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -61,37 +64,106 @@ func New(c *config.SNSConfig, t *template.Template, l *slog.Logger, httpOpts ...
 }
 
 func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "sns.notify")
+	defer span.End()
+
 	var (
 		tmplErr error
 		data    = notify.GetTemplateData(ctx, n.tmpl, alert, n.logger)
 		tmpl    = notify.TmplText(n.tmpl, data, &tmplErr)
 	)
 
+	span.SetAttributes(
+		attribute.Int("sns.alerts_count", len(alert)),
+		attribute.String("sns.region", n.conf.Sigv4.Region),
+	)
+
+	telemetry.AddEvent(ctx, "sns.notification_start")
+
+	telemetry.AddEvent(ctx, "sns.creating_client")
 	client, err := n.createSNSClient(tmpl, &tmplErr)
 	if err != nil {
+		span.RecordError(err)
 		var e awserr.RequestFailure
 		if errors.As(err, &e) {
+			span.SetAttributes(attribute.Int("aws.status_code", e.StatusCode()))
+			span.SetStatus(codes.Error, "AWS request failure")
+			telemetry.AddEvent(ctx, "sns.aws_request_failure", 
+				attribute.Int("status_code", e.StatusCode()),
+				attribute.String("message", e.Message()))
 			return n.retrier.Check(e.StatusCode(), strings.NewReader(e.Message()))
 		}
+		span.SetStatus(codes.Error, "client creation failed")
 		return true, err
 	}
 
+	telemetry.AddEvent(ctx, "sns.creating_publish_input")
 	publishInput, err := n.createPublishInput(ctx, tmpl, &tmplErr)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "publish input creation failed")
 		return true, err
 	}
 
+	// Add SNS-specific attributes
+	if publishInput.TopicArn != nil {
+		span.SetAttributes(attribute.String("sns.topic_arn", *publishInput.TopicArn))
+		telemetry.AddEvent(ctx, "sns.using_topic_arn", attribute.String("topic_arn", *publishInput.TopicArn))
+	}
+	if publishInput.PhoneNumber != nil {
+		span.SetAttributes(attribute.Bool("sns.is_sms", true))
+		telemetry.AddEvent(ctx, "sns.using_phone_number")
+	}
+	if publishInput.TargetArn != nil {
+		span.SetAttributes(attribute.String("sns.target_arn", *publishInput.TargetArn))
+		telemetry.AddEvent(ctx, "sns.using_target_arn", attribute.String("target_arn", *publishInput.TargetArn))
+	}
+
+	// Check for message attributes and truncation
+	if publishInput.MessageAttributes != nil {
+		span.SetAttributes(attribute.Int("sns.message_attributes_count", len(publishInput.MessageAttributes)))
+		if truncated, exists := publishInput.MessageAttributes["truncated"]; exists && truncated.StringValue != nil {
+			span.SetAttributes(attribute.Bool("sns.message_truncated", *truncated.StringValue == "true"))
+			telemetry.AddEvent(ctx, "sns.message_truncated")
+		}
+	}
+
+	telemetry.AddEvent(ctx, "sns.publishing_message")
 	publishOutput, err := client.Publish(publishInput)
 	if err != nil {
+		span.RecordError(err)
 		var e awserr.RequestFailure
 		if errors.As(err, &e) {
-			retryable, error := n.retrier.Check(e.StatusCode(), strings.NewReader(e.Message()))
+			span.SetAttributes(attribute.Int("aws.status_code", e.StatusCode()))
+			span.SetStatus(codes.Error, "publish failed")
+			telemetry.AddEvent(ctx, "sns.publish_failure", 
+				attribute.Int("status_code", e.StatusCode()),
+				attribute.String("message", e.Message()))
 
+			retryable, error := n.retrier.Check(e.StatusCode(), strings.NewReader(e.Message()))
 			reasonErr := notify.NewErrorWithReason(notify.GetFailureReasonFromStatusCode(e.StatusCode()), error)
 			return retryable, reasonErr
 		}
+		span.SetStatus(codes.Error, "publish failed")
 		return true, err
 	}
+
+	// Log success details
+	messageID := ""
+	sequenceNumber := ""
+	if publishOutput.MessageId != nil {
+		messageID = *publishOutput.MessageId
+		span.SetAttributes(attribute.String("sns.message_id", messageID))
+	}
+	if publishOutput.SequenceNumber != nil {
+		sequenceNumber = *publishOutput.SequenceNumber
+		span.SetAttributes(attribute.String("sns.sequence_number", sequenceNumber))
+	}
+
+	span.SetStatus(codes.Ok, "message published")
+	telemetry.AddEvent(ctx, "sns.notification_success", 
+		attribute.String("message_id", messageID),
+		attribute.String("sequence_number", sequenceNumber))
 
 	n.logger.Debug("SNS message successfully published", "message_id", publishOutput.MessageId, "sequence number", publishOutput.SequenceNumber)
 
