@@ -18,13 +18,16 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/contrib/exporters/autoexport"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const (
@@ -35,6 +38,38 @@ const (
 var (
 	tracer trace.Tracer
 	logger *slog.Logger
+
+	// Telemetry metrics
+	spansStarted = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "alertmanager_telemetry_spans_started_total",
+			Help: "Total number of spans started by operation",
+		},
+		[]string{"operation"},
+	)
+
+	spansFinished = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "alertmanager_telemetry_spans_finished_total",
+			Help: "Total number of spans finished by operation and status",
+		},
+		[]string{"operation", "status"},
+	)
+
+	exportErrors = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "alertmanager_telemetry_export_errors_total",
+			Help: "Total number of trace export errors",
+		},
+	)
+
+	exportDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "alertmanager_telemetry_export_duration_seconds",
+			Help:    "Time spent exporting traces",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
 )
 
 // Config holds telemetry configuration
@@ -50,7 +85,7 @@ func Initialize(ctx context.Context, cfg Config) (func(context.Context) error, e
 
 	if !cfg.Enabled {
 		logger.Info("OpenTelemetry tracing disabled")
-		otel.SetTracerProvider(trace.NewNoopTracerProvider())
+		otel.SetTracerProvider(noop.NewTracerProvider())
 		tracer = otel.Tracer(ServiceName)
 		return func(context.Context) error { return nil }, nil
 	}
@@ -76,15 +111,18 @@ func Initialize(ctx context.Context, cfg Config) (func(context.Context) error, e
 	traceExporter, err := autoexport.NewSpanExporter(ctx)
 	if err != nil {
 		logger.Warn("Failed to create trace exporter, using no-op tracer", "error", err)
-		otel.SetTracerProvider(trace.NewNoopTracerProvider())
+		otel.SetTracerProvider(noop.NewTracerProvider())
 		tracer = otel.Tracer(ServiceName)
 		return func(context.Context) error { return nil }, nil
 	}
 
-	// Create trace provider
+	// Create trace provider with instrumented processor
+	batchProcessor := sdktrace.NewBatchSpanProcessor(traceExporter)
+	instrumentedProcessor := &instrumentedSpanProcessor{next: batchProcessor}
+
 	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(instrumentedProcessor),
 		sdktrace.WithResource(res),
-		sdktrace.WithBatcher(traceExporter),
 	)
 
 	// Set global providers
@@ -118,5 +156,50 @@ func getServiceVersion() string {
 
 // IsEnabled returns true if telemetry is enabled
 func IsEnabled() bool {
-	return tracer != nil && tracer != trace.NewNoopTracerProvider().Tracer(ServiceName)
+	if tracer == nil {
+		return false
+	}
+
+	// Test if tracer creates recording spans
+	_, span := tracer.Start(context.Background(), "test")
+	recording := span.IsRecording()
+	span.End()
+	return recording
+}
+
+// RegisterMetrics registers telemetry metrics with the given registerer
+func RegisterMetrics(reg prometheus.Registerer) {
+	reg.MustRegister(
+		spansStarted,
+		spansFinished,
+		exportErrors,
+		exportDuration,
+	)
+}
+
+// instrumentedSpanProcessor wraps the span processor to add metrics
+type instrumentedSpanProcessor struct {
+	next sdktrace.SpanProcessor
+}
+
+func (p *instrumentedSpanProcessor) OnStart(parent context.Context, s sdktrace.ReadWriteSpan) {
+	p.next.OnStart(parent, s)
+	spansStarted.WithLabelValues(s.Name()).Inc()
+}
+
+func (p *instrumentedSpanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
+	p.next.OnEnd(s)
+	status := "ok"
+	if s.Status().Code == codes.Error {
+		status = "error"
+	}
+	spansFinished.WithLabelValues(s.Name(), status).Inc()
+}
+
+func (p *instrumentedSpanProcessor) Shutdown(ctx context.Context) error {
+	return p.next.Shutdown(ctx)
+}
+
+func (p *instrumentedSpanProcessor) ForceFlush(ctx context.Context) error {
+	return p.next.ForceFlush(ctx)
 }
