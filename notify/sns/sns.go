@@ -68,9 +68,8 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 		telemetry.WithNotificationAlertAttributes("sns", "sns", alert)...)
 	defer span.End()
 
-	var (
-		tmplErr error
-	)
+	var tmplErr error
+
 	telemetry.AddEvent(ctx, "sns.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, alert, n.logger)
 	tmpl := notify.TmplText(n.tmpl, data, &tmplErr)

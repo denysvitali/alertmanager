@@ -24,10 +24,10 @@ import (
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
 	"github.com/go-openapi/strfmt"
+
 	"github.com/prometheus/alertmanager/api/v2/client/alert"
 	"github.com/prometheus/alertmanager/api/v2/client/silence"
 	"github.com/prometheus/alertmanager/api/v2/models"
@@ -334,13 +334,4 @@ receivers:
 	})
 
 	at.Run()
-}
-
-// Helper function to convert span attributes to a map for easier testing.
-func attributesToMap(attrs []attribute.KeyValue) map[string]string {
-	result := make(map[string]string)
-	for _, attr := range attrs {
-		result[string(attr.Key)] = attr.Value.AsString()
-	}
-	return result
 }

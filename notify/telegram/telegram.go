@@ -71,9 +71,8 @@ func (n *Notifier) Notify(ctx context.Context, alert ...*types.Alert) (bool, err
 		telemetry.WithNotificationAlertAttributes("telegram", "telegram", alert)...)
 	defer span.End()
 
-	var (
-		err error
-	)
+	var err error
+
 	telemetry.AddEvent(ctx, "telegram.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, alert, n.logger)
 	tmpl := notify.TmplText(n.tmpl, data, &err)

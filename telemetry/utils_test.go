@@ -287,7 +287,6 @@ func TestTraceFunc(t *testing.T) {
 	err := TraceFunc(context.Background(), "test-func", func(ctx context.Context) error {
 		return nil
 	})
-
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -332,7 +331,6 @@ func TestTraceFuncWithResult(t *testing.T) {
 	result, err := TraceFuncWithResult(context.Background(), "test-func-result", func(ctx context.Context) (string, error) {
 		return "success", nil
 	})
-
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
