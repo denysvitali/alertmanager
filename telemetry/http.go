@@ -25,7 +25,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// HTTPMiddleware returns an HTTP middleware that adds tracing to requests
+// HTTPMiddleware returns an HTTP middleware that adds tracing to requests.
 func HTTPMiddleware(handlerName string) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -87,7 +87,7 @@ func HTTPMiddleware(handlerName string) func(http.HandlerFunc) http.HandlerFunc 
 	}
 }
 
-// responseWriterWrapper wraps http.ResponseWriter to capture status code and response size
+// responseWriterWrapper wraps http.ResponseWriter to capture status code and response size.
 type responseWriterWrapper struct {
 	http.ResponseWriter
 	statusCode   int
@@ -105,13 +105,13 @@ func (w *responseWriterWrapper) Write(data []byte) (int, error) {
 	return n, err
 }
 
-// InstrumentHandler creates a traced version of an HTTP handler
+// InstrumentHandler creates a traced version of an HTTP handler.
 func InstrumentHandler(handlerName string, handler http.HandlerFunc) http.HandlerFunc {
 	// Apply tracing middleware
 	return HTTPMiddleware(handlerName)(handler)
 }
 
-// GetTracingHeaders extracts tracing headers for outgoing HTTP requests
+// GetTracingHeaders extracts tracing headers for outgoing HTTP requests.
 func GetTracingHeaders(ctx context.Context) map[string]string {
 	if tracer == nil {
 		return nil

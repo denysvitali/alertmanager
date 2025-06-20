@@ -139,7 +139,7 @@ func TestGetServiceVersion(t *testing.T) {
 	}
 }
 
-// InMemoryExporter is a test exporter that stores spans in memory
+// InMemoryExporter is a test exporter that stores spans in memory.
 type InMemoryExporter struct {
 	spans []sdktrace.ReadOnlySpan
 }

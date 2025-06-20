@@ -27,15 +27,15 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
+	"github.com/go-openapi/strfmt"
 	"github.com/prometheus/alertmanager/api/v2/client/alert"
 	"github.com/prometheus/alertmanager/api/v2/client/silence"
 	"github.com/prometheus/alertmanager/api/v2/models"
-	"github.com/go-openapi/strfmt"
 
 	. "github.com/prometheus/alertmanager/test/with_api_v2"
 )
 
-// TraceCollector captures spans for validation in integration tests
+// TraceCollector captures spans for validation in integration tests.
 type TraceCollector struct {
 	mu    sync.RWMutex
 	spans []sdktrace.ReadOnlySpan
@@ -91,7 +91,7 @@ func (tc *TraceCollector) Clear() {
 	tc.spans = nil
 }
 
-// OTLPTraceServer provides a mock OTLP trace receiver for integration testing
+// OTLPTraceServer provides a mock OTLP trace receiver for integration testing.
 type OTLPTraceServer struct {
 	server    *httptest.Server
 	collector *TraceCollector
@@ -163,14 +163,14 @@ func (ots *OTLPTraceServer) GetTraceCount() int {
 	return len(ots.traces)
 }
 
-// TestTracingNotificationFlow validates end-to-end trace propagation through notification flow
+// TestTracingNotificationFlow validates end-to-end trace propagation through notification flow.
 func TestTracingNotificationFlow(t *testing.T) {
 	t.Parallel()
 
 	// Create OTLP trace server to collect traces
 	otlpServer := NewOTLPTraceServer()
 	defer otlpServer.Close()
-	
+
 	// Mock webhook that captures trace headers
 	var capturedHeaders http.Header
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -198,10 +198,10 @@ receivers:
 		TracingEnabled:  true,
 		TracingEndpoint: otlpServer.URL(),
 	})
-	
+
 	amc := at.AlertmanagerCluster(conf, 1)
 	am := amc.Members()[0]
-	
+
 	amc.Start()
 	defer amc.Terminate()
 
@@ -236,7 +236,7 @@ receivers:
 			t.Error("Expected webhook to be called with headers")
 			return
 		}
-		
+
 		// Check for trace propagation headers (W3C Trace Context)
 		traceparent := capturedHeaders.Get("traceparent")
 		if traceparent == "" {
@@ -244,7 +244,7 @@ receivers:
 		} else {
 			t.Logf("Found traceparent header: %s", traceparent)
 		}
-		
+
 		// Validate OTLP traces were exported
 		traceCount := otlpServer.GetTraceCount()
 		if traceCount == 0 {
@@ -252,7 +252,7 @@ receivers:
 		} else {
 			t.Logf("OTLP server received %d trace exports", traceCount)
 		}
-		
+
 		// Check for expected traces in OTLP server
 		traces := otlpServer.GetTraces()
 		for _, trace := range traces {
@@ -263,7 +263,7 @@ receivers:
 	at.Run()
 }
 
-// TestTracingSilenceOperations validates tracing for silence operations
+// TestTracingSilenceOperations validates tracing for silence operations.
 func TestTracingSilenceOperations(t *testing.T) {
 	t.Parallel()
 
@@ -284,10 +284,10 @@ receivers:
 		TracingEnabled:  true,
 		TracingEndpoint: otlpServer.URL(),
 	})
-	
+
 	amc := at.AlertmanagerCluster(conf, 1)
 	am := amc.Members()[0]
-	
+
 	amc.Start()
 	defer amc.Terminate()
 
@@ -325,7 +325,7 @@ receivers:
 		} else {
 			t.Logf("OTLP server received %d trace exports for silence operation", traceCount)
 		}
-		
+
 		// Check for expected traces in OTLP server
 		traces := otlpServer.GetTraces()
 		for _, trace := range traces {
@@ -336,7 +336,7 @@ receivers:
 	at.Run()
 }
 
-// Helper function to convert span attributes to a map for easier testing
+// Helper function to convert span attributes to a map for easier testing.
 func attributesToMap(attrs []attribute.KeyValue) map[string]string {
 	result := make(map[string]string)
 	for _, attr := range attrs {

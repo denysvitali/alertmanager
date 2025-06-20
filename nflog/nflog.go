@@ -564,7 +564,7 @@ func (l *Log) Query(ctx context.Context, params ...QueryParam) ([]*pb.Entry, err
 	if err != nil {
 		l.metrics.queryErrorsTotal.Inc()
 		span.RecordError(err)
-		if err == ErrNotFound {
+		if errors.Is(err, ErrNotFound) {
 			span.SetStatus(codes.Ok, "entry not found")
 		} else {
 			span.SetStatus(codes.Error, "query failed")

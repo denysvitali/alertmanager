@@ -39,7 +39,7 @@ var (
 	tracer trace.Tracer
 	logger *slog.Logger
 
-	// Telemetry metrics
+	// Telemetry metrics.
 	spansStarted = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "alertmanager_telemetry_spans_started_total",
@@ -72,14 +72,14 @@ var (
 	)
 )
 
-// Config holds telemetry configuration
+// Config holds telemetry configuration.
 type Config struct {
 	Enabled bool
 	Logger  *slog.Logger
 }
 
-// Initialize sets up OpenTelemetry with OTLP HTTP exporter
-// This allows users to configure OTEL via environment variables
+// Initialize sets up OpenTelemetry with OTLP HTTP exporter.
+// This allows users to configure OTEL via environment variables.
 func Initialize(ctx context.Context, cfg Config) (func(context.Context) error, error) {
 	logger = cfg.Logger
 
@@ -141,12 +141,12 @@ func Initialize(ctx context.Context, cfg Config) (func(context.Context) error, e
 	return tracerProvider.Shutdown, nil
 }
 
-// GetTracer returns the global tracer instance
+// GetTracer returns the global tracer instance.
 func GetTracer() trace.Tracer {
 	return tracer
 }
 
-// getServiceVersion returns the service version from environment or default
+// getServiceVersion returns the service version from environment or default.
 func getServiceVersion() string {
 	if version := os.Getenv("ALERTMANAGER_VERSION"); version != "" {
 		return version
@@ -154,7 +154,7 @@ func getServiceVersion() string {
 	return ServiceVersion
 }
 
-// IsEnabled returns true if telemetry is enabled
+// IsEnabled returns true if telemetry is enabled.
 func IsEnabled() bool {
 	if tracer == nil {
 		return false
@@ -167,7 +167,7 @@ func IsEnabled() bool {
 	return recording
 }
 
-// RegisterMetrics registers telemetry metrics with the given registerer
+// RegisterMetrics registers telemetry metrics with the given registerer.
 func RegisterMetrics(reg prometheus.Registerer) {
 	reg.MustRegister(
 		spansStarted,
@@ -177,7 +177,7 @@ func RegisterMetrics(reg prometheus.Registerer) {
 	)
 }
 
-// instrumentedSpanProcessor wraps the span processor to add metrics
+// instrumentedSpanProcessor wraps the span processor to add metrics.
 type instrumentedSpanProcessor struct {
 	next sdktrace.SpanProcessor
 }

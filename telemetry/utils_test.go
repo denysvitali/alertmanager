@@ -297,7 +297,7 @@ func TestTraceFunc(t *testing.T) {
 		return testErr
 	})
 
-	if err != testErr {
+	if !errors.Is(err, testErr) {
 		t.Errorf("Expected test error, got %v", err)
 	}
 
@@ -346,7 +346,7 @@ func TestTraceFuncWithResult(t *testing.T) {
 		return "", testErr
 	})
 
-	if err != testErr {
+	if !errors.Is(err, testErr) {
 		t.Errorf("Expected test error, got %v", err)
 	}
 	if result != "" {

@@ -24,7 +24,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// BenchmarkTracingOverhead measures the performance impact of tracing operations
+// BenchmarkTracingOverhead measures the performance impact of tracing operations.
 func BenchmarkTracingOverhead(b *testing.B) {
 	// Test different scenarios
 	b.Run("NoOp", benchmarkNoOpTracing)
@@ -38,7 +38,7 @@ func benchmarkNoOpTracing(b *testing.B) {
 	// Setup no-op tracer
 	otel.SetTracerProvider(noop.NewTracerProvider())
 	tracer := otel.Tracer("benchmark")
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -63,9 +63,9 @@ func benchmarkWithTracing(b *testing.B) {
 	)
 	otel.SetTracerProvider(tp)
 	tracer := otel.Tracer("benchmark")
-	
+
 	defer tp.Shutdown(context.Background())
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -89,9 +89,9 @@ func benchmarkSpanCreation(b *testing.B) {
 	)
 	otel.SetTracerProvider(tp)
 	tracer := otel.Tracer("benchmark")
-	
+
 	defer tp.Shutdown(context.Background())
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -109,12 +109,12 @@ func benchmarkAttributeSetting(b *testing.B) {
 	)
 	otel.SetTracerProvider(tp)
 	tracer := otel.Tracer("benchmark")
-	
+
 	defer tp.Shutdown(context.Background())
-	
+
 	_, span := tracer.Start(context.Background(), "benchmark-span")
 	defer span.End()
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -136,12 +136,12 @@ func benchmarkEventLogging(b *testing.B) {
 	)
 	otel.SetTracerProvider(tp)
 	tracer := otel.Tracer("benchmark")
-	
+
 	defer tp.Shutdown(context.Background())
-	
+
 	_, span := tracer.Start(context.Background(), "benchmark-span")
 	defer span.End()
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
@@ -150,7 +150,7 @@ func benchmarkEventLogging(b *testing.B) {
 	})
 }
 
-// BenchmarkAlertManagerOperations measures the overhead in realistic AlertManager scenarios
+// BenchmarkAlertManagerOperations measures the overhead in realistic AlertManager scenarios.
 func BenchmarkAlertManagerOperations(b *testing.B) {
 	b.Run("AlertIngestion", benchmarkAlertIngestion)
 	b.Run("NotificationSend", benchmarkNotificationSend)
@@ -166,27 +166,27 @@ func benchmarkAlertIngestion(b *testing.B) {
 	)
 	otel.SetTracerProvider(tp)
 	tracer := otel.Tracer("alertmanager")
-	
+
 	defer tp.Shutdown(context.Background())
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			// Simulate alert ingestion tracing
 			ctx, span := tracer.Start(context.Background(), "alert.ingestion")
-			
+
 			span.SetAttributes(
 				attribute.String("alert.name", "TestAlert"),
 				attribute.String("alert.severity", "warning"),
 				attribute.Int("alert.count", 1),
 				attribute.String("alert.fingerprint", "abc123"),
 			)
-			
+
 			// Simulate processing steps
 			span.AddEvent("alert.validation")
 			span.AddEvent("alert.routing")
 			span.AddEvent("alert.storage")
-			
+
 			span.End()
 			_ = ctx
 		}
@@ -201,15 +201,15 @@ func benchmarkNotificationSend(b *testing.B) {
 	)
 	otel.SetTracerProvider(tp)
 	tracer := otel.Tracer("alertmanager")
-	
+
 	defer tp.Shutdown(context.Background())
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			// Simulate notification sending tracing
 			ctx, span := tracer.Start(context.Background(), "notification.webhook.send")
-			
+
 			span.SetAttributes(
 				attribute.String("notification.receiver", "webhook-receiver"),
 				attribute.String("notification.type", "webhook"),
@@ -217,12 +217,12 @@ func benchmarkNotificationSend(b *testing.B) {
 				attribute.String("alert.name", "TestAlert"),
 				attribute.Int("alert.count", 3),
 			)
-			
+
 			// Simulate notification steps
 			span.AddEvent("template.render")
 			span.AddEvent("http.request")
 			span.AddEvent("http.response")
-			
+
 			span.End()
 			_ = ctx
 		}
@@ -237,31 +237,31 @@ func benchmarkSilenceCheck(b *testing.B) {
 	)
 	otel.SetTracerProvider(tp)
 	tracer := otel.Tracer("alertmanager")
-	
+
 	defer tp.Shutdown(context.Background())
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			// Simulate silence checking tracing
 			ctx, span := tracer.Start(context.Background(), "silence.check")
-			
+
 			span.SetAttributes(
 				attribute.String("alert.name", "TestAlert"),
 				attribute.String("alert.fingerprint", "abc123"),
 				attribute.Int("silence.count", 10),
 			)
-			
+
 			span.AddEvent("silence.query")
 			span.AddEvent("silence.match")
-			
+
 			span.End()
 			_ = ctx
 		}
 	})
 }
 
-// NoOpExporter is used for benchmarking to avoid I/O overhead
+// NoOpExporter is used for benchmarking to avoid I/O overhead.
 type NoOpExporter struct{}
 
 func (e *NoOpExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
@@ -273,7 +273,7 @@ func (e *NoOpExporter) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// BenchmarkTracingUtilities benchmarks the utility functions
+// BenchmarkTracingUtilities benchmarks the utility functions.
 func BenchmarkTracingUtilities(b *testing.B) {
 	b.Run("WithAlertAttributes", benchmarkWithAlertAttributes)
 	b.Run("WithNotificationAttributes", benchmarkWithNotificationAttributes)
@@ -308,9 +308,9 @@ func benchmarkTraceFunc(b *testing.B) {
 	)
 	otel.SetTracerProvider(tp)
 	tracer = otel.Tracer("alertmanager")
-	
+
 	defer tp.Shutdown(context.Background())
-	
+
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {

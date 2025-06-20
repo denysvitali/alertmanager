@@ -23,9 +23,9 @@ import (
 	"github.com/prometheus/alertmanager/types"
 )
 
-// Common attribute keys for AlertManager tracing
+// Common attribute keys for AlertManager tracing.
 const (
-	// Alert attributes
+	// Alert attributes.
 	AlertNameKey         = "alert.name"
 	AlertGroupKey        = "alert.group"
 	AlertCountKey        = "alert.count"
@@ -33,34 +33,34 @@ const (
 	AlertFingerprintKey  = "alert.fingerprint"
 	AlertGeneratorURLKey = "alert.generator_url"
 
-	// Notification attributes
+	// Notification attributes.
 	NotificationReceiverKey = "notification.receiver"
 	NotificationTypeKey     = "notification.type"
 	NotificationURLKey      = "notification.url"
 	NotificationRetryKey    = "notification.retry"
 	NotificationStatusKey   = "notification.status"
 
-	// Routing attributes
+	// Routing attributes.
 	RouteMatcherKey  = "route.matcher"
 	RouteReceiverKey = "route.receiver"
 	RouteGroupByKey  = "route.group_by"
 
-	// HTTP attributes
+	// HTTP attributes.
 	HTTPMethodKey     = "http.method"
 	HTTPURLKey        = "http.url"
 	HTTPStatusCodeKey = "http.status_code"
 	HTTPUserAgentKey  = "http.user_agent"
 
-	// Silence attributes
+	// Silence attributes.
 	SilenceIDKey       = "silence.id"
 	SilenceMatchersKey = "silence.matchers"
 
-	// Template attributes
+	// Template attributes.
 	TemplateNameKey = "template.name"
 	TemplateTypeKey = "template.type"
 )
 
-// StartSpan starts a new span with the given name and attributes
+// StartSpan starts a new span with the given name and attributes.
 func StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
 	if tracer == nil {
 		return ctx, trace.SpanFromContext(ctx)
@@ -69,7 +69,7 @@ func StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (c
 	return tracer.Start(ctx, name, trace.WithAttributes(attrs...))
 }
 
-// AddEvent adds an event to the current span
+// AddEvent adds an event to the current span.
 func AddEvent(ctx context.Context, name string, attrs ...attribute.KeyValue) {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() {
@@ -77,7 +77,7 @@ func AddEvent(ctx context.Context, name string, attrs ...attribute.KeyValue) {
 	}
 }
 
-// SetAttributes sets attributes on the current span
+// SetAttributes sets attributes on the current span.
 func SetAttributes(ctx context.Context, attrs ...attribute.KeyValue) {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() {
@@ -85,7 +85,7 @@ func SetAttributes(ctx context.Context, attrs ...attribute.KeyValue) {
 	}
 }
 
-// SetError records an error on the current span
+// SetError records an error on the current span.
 func SetError(ctx context.Context, err error) {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() && err != nil {
@@ -94,7 +94,7 @@ func SetError(ctx context.Context, err error) {
 	}
 }
 
-// SetStatus sets the status of the current span
+// SetStatus sets the status of the current span.
 func SetStatus(ctx context.Context, code codes.Code, description string) {
 	span := trace.SpanFromContext(ctx)
 	if span.IsRecording() {
@@ -102,7 +102,7 @@ func SetStatus(ctx context.Context, code codes.Code, description string) {
 	}
 }
 
-// WithAlertAttributes returns alert-related attributes
+// WithAlertAttributes returns alert-related attributes.
 func WithAlertAttributes(alertname, group string, count int) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String(AlertNameKey, alertname),
@@ -114,7 +114,7 @@ func WithAlertAttributes(alertname, group string, count int) []attribute.KeyValu
 	return attrs
 }
 
-// WithNotificationAttributes returns notification-related attributes
+// WithNotificationAttributes returns notification-related attributes.
 func WithNotificationAttributes(receiver, notificationType string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String(NotificationReceiverKey, receiver),
@@ -122,7 +122,7 @@ func WithNotificationAttributes(receiver, notificationType string) []attribute.K
 	}
 }
 
-// WithHTTPAttributes returns HTTP-related attributes
+// WithHTTPAttributes returns HTTP-related attributes.
 func WithHTTPAttributes(method, url string, statusCode int) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String(HTTPMethodKey, method),
@@ -134,7 +134,7 @@ func WithHTTPAttributes(method, url string, statusCode int) []attribute.KeyValue
 	return attrs
 }
 
-// WithRouteAttributes returns routing-related attributes
+// WithRouteAttributes returns routing-related attributes.
 func WithRouteAttributes(receiver string, matchers []string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String(RouteReceiverKey, receiver),
@@ -145,7 +145,7 @@ func WithRouteAttributes(receiver string, matchers []string) []attribute.KeyValu
 	return attrs
 }
 
-// WithSilenceAttributes returns silence-related attributes
+// WithSilenceAttributes returns silence-related attributes.
 func WithSilenceAttributes(silenceID string, matcherCount int) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.Int("silence.matcher_count", matcherCount),
@@ -156,7 +156,7 @@ func WithSilenceAttributes(silenceID string, matcherCount int) []attribute.KeyVa
 	return attrs
 }
 
-// WithNotificationAlertAttributes returns notification-related attributes including alert information
+// WithNotificationAlertAttributes returns notification-related attributes including alert information.
 func WithNotificationAlertAttributes(receiver, notificationType string, alerts []*types.Alert) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String(NotificationReceiverKey, receiver),
@@ -184,7 +184,7 @@ func WithNotificationAlertAttributes(receiver, notificationType string, alerts [
 	return attrs
 }
 
-// FinishSpan finishes a span with optional error
+// FinishSpan finishes a span with optional error.
 func FinishSpan(span trace.Span, err error) {
 	if err != nil {
 		span.RecordError(err)
@@ -195,7 +195,7 @@ func FinishSpan(span trace.Span, err error) {
 	span.End()
 }
 
-// TraceFunc wraps a function with tracing
+// TraceFunc wraps a function with tracing.
 func TraceFunc(ctx context.Context, name string, fn func(ctx context.Context) error, attrs ...attribute.KeyValue) error {
 	ctx, span := StartSpan(ctx, name, attrs...)
 	defer span.End()
@@ -207,7 +207,7 @@ func TraceFunc(ctx context.Context, name string, fn func(ctx context.Context) er
 	return err
 }
 
-// TraceFuncWithResult wraps a function with tracing and returns a result
+// TraceFuncWithResult wraps a function with tracing and returns a result.
 func TraceFuncWithResult[T any](ctx context.Context, name string, fn func(ctx context.Context) (T, error), attrs ...attribute.KeyValue) (T, error) {
 	ctx, span := StartSpan(ctx, name, attrs...)
 	defer span.End()
@@ -219,7 +219,7 @@ func TraceFuncWithResult[T any](ctx context.Context, name string, fn func(ctx co
 	return result, err
 }
 
-// GetTraceID returns the trace ID from the current span context
+// GetTraceID returns the trace ID from the current span context.
 func GetTraceID(ctx context.Context) string {
 	span := trace.SpanFromContext(ctx)
 	if span.SpanContext().IsValid() {
@@ -228,7 +228,7 @@ func GetTraceID(ctx context.Context) string {
 	return ""
 }
 
-// GetSpanID returns the span ID from the current span context
+// GetSpanID returns the span ID from the current span context.
 func GetSpanID(ctx context.Context) string {
 	span := trace.SpanFromContext(ctx)
 	if span.SpanContext().IsValid() {
@@ -237,7 +237,7 @@ func GetSpanID(ctx context.Context) string {
 	return ""
 }
 
-// LogFields returns structured log fields with trace context
+// LogFields returns structured log fields with trace context.
 func LogFields(ctx context.Context) []any {
 	traceID := GetTraceID(ctx)
 	spanID := GetSpanID(ctx)
@@ -252,7 +252,7 @@ func LogFields(ctx context.Context) []any {
 	return fields
 }
 
-// SanitizeURL removes sensitive information from URLs for tracing
+// SanitizeURL removes sensitive information from URLs for tracing.
 func SanitizeURL(url string) string {
 	// This is a simple implementation - in production you might want
 	// more sophisticated URL sanitization
