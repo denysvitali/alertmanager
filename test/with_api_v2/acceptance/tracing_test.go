@@ -280,7 +280,7 @@ receivers:
 			for _, trace := range traces {
 				t.Logf("Received trace data: %+v", trace)
 			}
-			
+
 			validationDone <- nil
 		case <-time.After(2 * time.Second):
 			validationDone <- fmt.Errorf("timed out waiting for webhook notification")
