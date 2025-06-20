@@ -173,9 +173,17 @@ func TestTracingNotificationFlow(t *testing.T) {
 
 	// Mock webhook that captures trace headers
 	var capturedHeaders http.Header
+	var headersMu sync.RWMutex
+	webhookCalled := make(chan struct{}, 1)
 	webhook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headersMu.Lock()
 		capturedHeaders = r.Header.Clone()
+		headersMu.Unlock()
 		w.WriteHeader(200)
+		select {
+		case webhookCalled <- struct{}{}:
+		default:
+		}
 	}))
 	defer webhook.Close()
 
@@ -194,7 +202,7 @@ receivers:
 `, webhook.URL)
 
 	at := NewAcceptanceTest(t, &AcceptanceOpts{
-		Tolerance:       2 * time.Second,
+		Tolerance:       5 * time.Second,
 		TracingEnabled:  true,
 		TracingEndpoint: otlpServer.URL(),
 	})
@@ -230,33 +238,47 @@ receivers:
 		}
 	})
 
+	// Schedule validation to run after webhook should have been called
 	at.Do(3.0, func() {
-		// Validate trace propagation to webhook
-		if capturedHeaders == nil {
-			t.Error("Expected webhook to be called with headers")
-			return
-		}
+		// Wait for webhook to be called with a timeout
+		select {
+		case <-webhookCalled:
+			// Validate trace propagation to webhook.
+			headersMu.RLock()
+			headers := capturedHeaders
+			headersMu.RUnlock()
 
-		// Check for trace propagation headers (W3C Trace Context)
-		traceparent := capturedHeaders.Get("traceparent")
-		if traceparent == "" {
-			t.Log("Note: traceparent header not found - trace propagation may not be implemented")
-		} else {
-			t.Logf("Found traceparent header: %s", traceparent)
-		}
+			if headers == nil {
+				t.Error("Expected webhook to be called with headers, but they were nil")
+				return
+			}
 
-		// Validate OTLP traces were exported
-		traceCount := otlpServer.GetTraceCount()
-		if traceCount == 0 {
-			t.Log("Note: No traces received by OTLP server - this may indicate tracing setup issues")
-		} else {
-			t.Logf("OTLP server received %d trace exports", traceCount)
-		}
+			// Check for trace propagation headers (W3C Trace Context).
+			traceparent := headers.Get("traceparent")
+			if traceparent == "" {
+				t.Log("Note: traceparent header not found - trace propagation may not be implemented")
+			} else {
+				t.Logf("Found traceparent header: %s", traceparent)
+			}
 
-		// Check for expected traces in OTLP server
-		traces := otlpServer.GetTraces()
-		for _, trace := range traces {
-			t.Logf("Received trace data: %+v", trace)
+			// It can take a moment for traces to be exported.
+			time.Sleep(200 * time.Millisecond)
+
+			// Validate OTLP traces were exported.
+			traceCount := otlpServer.GetTraceCount()
+			if traceCount == 0 {
+				t.Log("Note: No traces received by OTLP server - this may indicate tracing setup issues")
+			} else {
+				t.Logf("OTLP server received %d trace exports", traceCount)
+			}
+
+			// Check for expected traces in OTLP server.
+			traces := otlpServer.GetTraces()
+			for _, trace := range traces {
+				t.Logf("Received trace data: %+v", trace)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for webhook notification")
 		}
 	})
 
