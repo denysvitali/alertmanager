@@ -56,6 +56,10 @@ type AcceptanceOpts struct {
 	RoutePrefix  string
 	Tolerance    time.Duration
 	baseTime     time.Time
+	// TracingEnabled enables OpenTelemetry tracing for the test
+	TracingEnabled bool
+	// TracingEndpoint specifies the OTLP endpoint for trace export
+	TracingEndpoint string
 }
 
 func (opts *AcceptanceOpts) alertString(a *models.GettableAlert) string {
@@ -308,9 +312,22 @@ func (am *Alertmanager) Start(additionalArg []string) error {
 	if am.opts.RoutePrefix != "" {
 		args = append(args, "--web.route-prefix", am.opts.RoutePrefix)
 	}
+	// Add tracing configuration if enabled
+	if am.opts.TracingEnabled {
+		args = append(args, "--tracing.enable")
+	}
 	args = append(args, additionalArg...)
 
 	cmd := exec.Command("../../../alertmanager", args...)
+
+	// Set environment variables for tracing if configured
+	if am.opts.TracingEnabled && am.opts.TracingEndpoint != "" {
+		cmd.Env = append(os.Environ(),
+			"OTEL_EXPORTER_OTLP_ENDPOINT="+am.opts.TracingEndpoint,
+			"OTEL_SERVICE_NAME=alertmanager-test",
+			"OTEL_TRACES_SAMPLER=always_on",
+		)
+	}
 
 	if am.cmd == nil {
 		var outb, errb buffer
