@@ -238,6 +238,9 @@ receivers:
 		}
 	})
 
+	// Use a channel to communicate results back to the main test
+	validationDone := make(chan error, 1)
+
 	// Schedule validation to run after webhook should have been called
 	at.Do(3.0, func() {
 		// Wait for webhook to be called with a timeout
@@ -249,7 +252,7 @@ receivers:
 			headersMu.RUnlock()
 
 			if headers == nil {
-				t.Error("Expected webhook to be called with headers, but they were nil")
+				validationDone <- fmt.Errorf("expected webhook to be called with headers, but they were nil")
 				return
 			}
 
@@ -277,12 +280,24 @@ receivers:
 			for _, trace := range traces {
 				t.Logf("Received trace data: %+v", trace)
 			}
+			
+			validationDone <- nil
 		case <-time.After(2 * time.Second):
-			t.Error("timed out waiting for webhook notification")
+			validationDone <- fmt.Errorf("timed out waiting for webhook notification")
 		}
 	})
 
 	at.Run()
+
+	// Wait for validation to complete and check for errors
+	select {
+	case err := <-validationDone:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("Test timed out waiting for validation to complete")
+	}
 }
 
 // TestTracingSilenceOperations validates tracing for silence operations.
