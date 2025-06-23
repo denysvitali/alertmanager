@@ -59,11 +59,12 @@ func New(c *config.PushoverConfig, t *template.Template, l *slog.Logger, httpOpt
 	if err != nil {
 		return nil, err
 	}
+
 	return &Notifier{
 		conf:    c,
 		tmpl:    t,
 		logger:  l,
-		client:  client,
+		client:  notify.InstrumentedClient(client, "pushover"),
 		retrier: &notify.Retrier{},
 		apiURL:  "https://api.pushover.net/1/messages.json",
 	}, nil

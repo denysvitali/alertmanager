@@ -62,7 +62,7 @@ func New(c *config.JiraConfig, t *template.Template, l *slog.Logger, httpOpts ..
 		conf:    c,
 		tmpl:    t,
 		logger:  l,
-		client:  client,
+		client:  notify.InstrumentedClient(client, "jira"),
 		retrier: &notify.Retrier{RetryCodes: []int{http.StatusTooManyRequests}},
 	}, nil
 }

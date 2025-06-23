@@ -62,7 +62,8 @@ func New(c *config.PagerdutyConfig, t *template.Template, l *slog.Logger, httpOp
 	if err != nil {
 		return nil, err
 	}
-	n := &Notifier{conf: c, tmpl: t, logger: l, client: client}
+
+	n := &Notifier{conf: c, tmpl: t, logger: l, client: notify.InstrumentedClient(client, "pagerduty")}
 	if c.ServiceKey != "" || c.ServiceKeyFile != "" {
 		n.apiV1 = "https://events.pagerduty.com/generic/2010-04-15/create_event.json"
 		// Retrying can solve the issue on 403 (rate limiting) and 5xx response codes.

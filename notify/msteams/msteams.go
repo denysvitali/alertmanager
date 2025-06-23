@@ -73,7 +73,7 @@ func New(c *config.MSTeamsConfig, t *template.Template, l *slog.Logger, httpOpts
 		conf:         c,
 		tmpl:         t,
 		logger:       l,
-		client:       client,
+		client:       notify.InstrumentedClient(client, "msteams"),
 		retrier:      &notify.Retrier{},
 		webhookURL:   c.WebhookURL,
 		postJSONFunc: notify.PostJSON,

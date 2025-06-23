@@ -59,7 +59,7 @@ func New(c *config.SlackConfig, t *template.Template, l *slog.Logger, httpOpts .
 		conf:         c,
 		tmpl:         t,
 		logger:       l,
-		client:       client,
+		client:       notify.InstrumentedClient(client, "slack"),
 		retrier:      &notify.Retrier{},
 		postJSONFunc: notify.PostJSON,
 	}, nil

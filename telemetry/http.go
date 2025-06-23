@@ -17,6 +17,7 @@ import (
 	"context"
 	"net/http"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -24,6 +25,43 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// InstrumentHTTPClient wraps an HTTP client with OpenTelemetry instrumentation.
+// This automatically adds tracing headers to outgoing requests and creates spans for HTTP calls.
+func InstrumentHTTPClient(client *http.Client, operationName string) *http.Client {
+	if client == nil {
+		client = http.DefaultClient
+	}
+
+	// If tracing is disabled, return the original client
+	if tracer == nil || !IsEnabled() {
+		return client
+	}
+
+	// Create a new client with the instrumented transport
+	instrumentedClient := &http.Client{
+		Transport:     otelhttp.NewTransport(client.Transport),
+		CheckRedirect: client.CheckRedirect,
+		Jar:           client.Jar,
+		Timeout:       client.Timeout,
+	}
+
+	return instrumentedClient
+}
+
+// InstrumentRoundTripper wraps an http.RoundTripper with OpenTelemetry instrumentation.
+func InstrumentRoundTripper(rt http.RoundTripper, operationName string) http.RoundTripper {
+	if rt == nil {
+		rt = http.DefaultTransport
+	}
+
+	// If tracing is disabled, return the original round tripper
+	if tracer == nil || !IsEnabled() {
+		return rt
+	}
+
+	return otelhttp.NewTransport(rt)
+}
 
 // HTTPMiddleware returns an HTTP middleware that adds tracing to requests.
 func HTTPMiddleware(handlerName string) func(http.HandlerFunc) http.HandlerFunc {

@@ -53,11 +53,12 @@ func New(c *config.VictorOpsConfig, t *template.Template, l *slog.Logger, httpOp
 	if err != nil {
 		return nil, err
 	}
+
 	return &Notifier{
 		conf:   c,
 		tmpl:   t,
 		logger: l,
-		client: client,
+		client: notify.InstrumentedClient(client, "victorops"),
 		// Missing documentation therefore assuming only 5xx response codes are
 		// recoverable.
 		retrier: &notify.Retrier{},

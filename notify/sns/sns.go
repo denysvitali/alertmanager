@@ -54,11 +54,12 @@ func New(c *config.SNSConfig, t *template.Template, l *slog.Logger, httpOpts ...
 	if err != nil {
 		return nil, err
 	}
+
 	return &Notifier{
 		conf:    c,
 		tmpl:    t,
 		logger:  l,
-		client:  client,
+		client:  notify.InstrumentedClient(client, "sns"),
 		retrier: &notify.Retrier{},
 	}, nil
 }

@@ -47,11 +47,15 @@ func New(conf *config.WebhookConfig, t *template.Template, l *slog.Logger, httpO
 	if err != nil {
 		return nil, err
 	}
+
+	// Instrument the HTTP client for tracing
+	instrumentedClient := notify.InstrumentedClient(client, "webhook")
+
 	return &Notifier{
 		conf:   conf,
 		tmpl:   t,
 		logger: l,
-		client: client,
+		client: instrumentedClient,
 		// Webhooks are assumed to respond with 2xx response codes on a successful
 		// request and 5xx response codes are assumed to be recoverable.
 		retrier: &notify.Retrier{},

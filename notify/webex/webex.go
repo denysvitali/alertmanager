@@ -56,7 +56,7 @@ func New(c *config.WebexConfig, t *template.Template, l *slog.Logger, httpOpts .
 		conf:    c,
 		tmpl:    t,
 		logger:  l,
-		client:  client,
+		client:  notify.InstrumentedClient(client, "webex"),
 		retrier: &notify.Retrier{},
 	}
 

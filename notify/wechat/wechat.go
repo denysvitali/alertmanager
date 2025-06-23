@@ -79,7 +79,7 @@ func New(c *config.WechatConfig, t *template.Template, l *slog.Logger, httpOpts 
 		return nil, err
 	}
 
-	return &Notifier{conf: c, tmpl: t, logger: l, client: client}, nil
+	return &Notifier{conf: c, tmpl: t, logger: l, client: notify.InstrumentedClient(client, "wechat")}, nil
 }
 
 // Notify implements the Notifier interface.

@@ -52,7 +52,7 @@ func New(conf *config.TelegramConfig, t *template.Template, l *slog.Logger, http
 		return nil, err
 	}
 
-	client, err := createTelegramClient(conf.APIUrl.String(), conf.ParseMode, httpclient)
+	client, err := createTelegramClient(conf.APIUrl.String(), conf.ParseMode, notify.InstrumentedClient(httpclient, "telegram"))
 	if err != nil {
 		return nil, err
 	}

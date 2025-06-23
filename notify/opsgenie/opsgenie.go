@@ -53,11 +53,12 @@ func New(c *config.OpsGenieConfig, t *template.Template, l *slog.Logger, httpOpt
 	if err != nil {
 		return nil, err
 	}
+
 	return &Notifier{
 		conf:    c,
 		tmpl:    t,
 		logger:  l,
-		client:  client,
+		client:  notify.InstrumentedClient(client, "opsgenie"),
 		retrier: &notify.Retrier{RetryCodes: []int{http.StatusTooManyRequests}},
 	}, nil
 }

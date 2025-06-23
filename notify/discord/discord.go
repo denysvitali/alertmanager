@@ -67,11 +67,12 @@ func New(c *config.DiscordConfig, t *template.Template, l *slog.Logger, httpOpts
 	if err != nil {
 		return nil, err
 	}
+
 	n := &Notifier{
 		conf:       c,
 		tmpl:       t,
 		logger:     l,
-		client:     client,
+		client:     notify.InstrumentedClient(client, "discord"),
 		retrier:    &notify.Retrier{},
 		webhookURL: c.WebhookURL,
 	}

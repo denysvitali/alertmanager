@@ -105,11 +105,12 @@ func New(c *config.RocketchatConfig, t *template.Template, l *slog.Logger, httpO
 	}
 
 	client.Transport = &rocketchatRoundTripper{wrapped: client.Transport, token: token, tokenID: tokenID}
+
 	return &Notifier{
 		conf:         c,
 		tmpl:         t,
 		logger:       l,
-		client:       client,
+		client:       notify.InstrumentedClient(client, "rocketchat"),
 		retrier:      &notify.Retrier{},
 		postJSONFunc: notify.PostJSON,
 		token:        token,
