@@ -74,22 +74,13 @@ var (
 
 // Config holds telemetry configuration.
 type Config struct {
-	Enabled bool
-	Logger  *slog.Logger
+	Logger *slog.Logger
 }
 
 // Initialize sets up OpenTelemetry with OTLP HTTP exporter.
 // This allows users to configure OTEL via environment variables.
 func Initialize(ctx context.Context, cfg Config) (func(context.Context) error, error) {
 	logger = cfg.Logger
-
-	if !cfg.Enabled {
-		logger.Info("OpenTelemetry tracing disabled")
-		otel.SetTracerProvider(noop.NewTracerProvider())
-		tracer = otel.Tracer(ServiceName)
-		return func(context.Context) error { return nil }, nil
-	}
-
 	logger.Info("Initializing OpenTelemetry tracing")
 
 	// Create resource with service information

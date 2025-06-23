@@ -181,8 +181,6 @@ func run() int {
 		allowInsecureAdvertise = kingpin.Flag("cluster.allow-insecure-public-advertise-address-discovery", "[EXPERIMENTAL] Allow alertmanager to discover and listen on a public IP address.").Bool()
 		label                  = kingpin.Flag("cluster.label", "The cluster label is an optional string to include on each packet and stream. It uniquely identifies the cluster and prevents cross-communication issues when sending gossip messages.").Default("").String()
 		featureFlags           = kingpin.Flag("enable-feature", fmt.Sprintf("Comma-separated experimental features to enable. Valid options: %s", strings.Join(featurecontrol.AllowedFlags, ", "))).Default("").String()
-
-		enableTracing = kingpin.Flag("tracing.enable", "Enable OpenTelemetry tracing. Configure via OTEL_* environment variables.").Default("false").Bool()
 	)
 
 	promslogflag.AddFlags(kingpin.CommandLine, &promslogConfig)
@@ -200,8 +198,7 @@ func run() int {
 	// Initialize OpenTelemetry tracing
 	ctx := context.Background()
 	tracingShutdown, err := telemetry.Initialize(ctx, telemetry.Config{
-		Enabled: *enableTracing,
-		Logger:  logger.With("component", "telemetry"),
+		Logger: logger.With("component", "telemetry"),
 	})
 	if err != nil {
 		logger.Error("Failed to initialize telemetry", "err", err)
