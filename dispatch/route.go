@@ -153,11 +153,7 @@ func (r *Route) Match(lset model.LabelSet) []*Route {
 // MatchWithContext does a depth-first left-to-right search through the route tree
 // and returns the matching routing nodes with tracing context.
 func (r *Route) MatchWithContext(ctx context.Context, lset model.LabelSet) []*Route {
-	ctx, span := telemetry.StartSpan(ctx, "route.match")
-	defer span.End()
-
 	if !r.Matchers.Matches(lset) {
-		telemetry.AddEvent(ctx, "route.no_match")
 		return nil
 	}
 
