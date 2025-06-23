@@ -20,9 +20,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"go.opentelemetry.io/contrib/exporters/autoexport"
+	"go.opentelemetry.io/contrib/propagators/autoprop"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
@@ -118,10 +118,11 @@ func Initialize(ctx context.Context, cfg Config) (func(context.Context) error, e
 
 	// Set global providers
 	otel.SetTracerProvider(tracerProvider)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
+	
+	// Use autoprop to respect OTEL_PROPAGATORS environment variable
+	// This allows users to configure propagators via OTEL_PROPAGATORS (e.g., tracecontext,baggage)
+	propagator := autoprop.NewTextMapPropagator()
+	otel.SetTextMapPropagator(propagator)
 
 	// Get tracer for this service
 	tracer = otel.Tracer(ServiceName)
