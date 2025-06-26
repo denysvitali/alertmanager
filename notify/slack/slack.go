@@ -25,9 +25,11 @@ import (
 	"strings"
 
 	commoncfg "github.com/prometheus/common/config"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -57,7 +59,7 @@ func New(c *config.SlackConfig, t *template.Template, l *slog.Logger, httpOpts .
 		conf:         c,
 		tmpl:         t,
 		logger:       l,
-		client:       client,
+		client:       notify.InstrumentedClient(client, "slack"),
 		retrier:      &notify.Retrier{},
 		postJSONFunc: notify.PostJSON,
 	}, nil
@@ -92,7 +94,12 @@ type attachment struct {
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "notification.slack.send",
+		telemetry.WithNotificationAlertAttributes("slack", "slack", as)...)
+	defer span.End()
+
 	var err error
+	telemetry.AddEvent(ctx, "slack.template_data_preparation")
 	var (
 		data     = notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 		tmplText = notify.TmplText(n.tmpl, data, &err)
@@ -184,7 +191,11 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		LinkNames:   n.conf.LinkNames,
 		Attachments: []attachment{*att},
 	}
+
+	telemetry.AddEvent(ctx, "slack.template_execution_completed")
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "template execution failed")
 		return false, err
 	}
 
@@ -199,21 +210,28 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	} else {
 		content, err := os.ReadFile(n.conf.APIURLFile)
 		if err != nil {
+			telemetry.SetError(ctx, err)
 			return false, err
 		}
 		u = strings.TrimSpace(string(content))
 	}
 
+	telemetry.AddEvent(ctx, "notification.http.send")
 	resp, err := n.postJSONFunc(ctx, n.client, u, &buf)
 	if err != nil {
+		telemetry.SetError(ctx, err)
 		return true, notify.RedactURL(err)
 	}
 	defer notify.Drain(resp)
+
+	telemetry.SetAttributes(ctx, telemetry.WithHTTPAttributes("POST", telemetry.SanitizeURL(u), resp.StatusCode)...)
 
 	// Use a retrier to generate an error message for non-200 responses and
 	// classify them as retriable or not.
 	retry, err := n.retrier.Check(resp.StatusCode, resp.Body)
 	if err != nil {
+		telemetry.SetError(ctx, err)
+		telemetry.AddEvent(ctx, "notification.retry_needed")
 		err = fmt.Errorf("channel %q: %w", req.Channel, err)
 		return retry, notify.NewErrorWithReason(notify.GetFailureReasonFromStatusCode(resp.StatusCode), err)
 	}
@@ -222,10 +240,13 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	// https://slack.dev/node-slack-sdk/web-api#handle-errors
 	retry, err = checkResponseError(resp)
 	if err != nil {
+		telemetry.SetError(ctx, err)
+		telemetry.AddEvent(ctx, "notification.api_error")
 		err = fmt.Errorf("channel %q: %w", req.Channel, err)
 		return retry, notify.NewErrorWithReason(notify.ClientErrorReason, err)
 	}
 
+	telemetry.AddEvent(ctx, "notification.success")
 	return retry, nil
 }
 

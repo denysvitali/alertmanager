@@ -14,6 +14,7 @@
 package dispatch
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/pkg/labels"
+	"github.com/prometheus/alertmanager/telemetry"
 )
 
 // DefaultRouteOpts are the defaulting routing options which apply
@@ -145,24 +147,35 @@ func NewRoutes(croutes []*config.Route, parent *Route) []*Route {
 // Match does a depth-first left-to-right search through the route tree
 // and returns the matching routing nodes.
 func (r *Route) Match(lset model.LabelSet) []*Route {
+	return r.MatchWithContext(context.Background(), lset)
+}
+
+// MatchWithContext does a depth-first left-to-right search through the route tree
+// and returns the matching routing nodes with tracing context.
+func (r *Route) MatchWithContext(ctx context.Context, lset model.LabelSet) []*Route {
 	if !r.Matchers.Matches(lset) {
 		return nil
 	}
 
+	telemetry.AddEvent(ctx, "route.match_found",
+		telemetry.WithRouteAttributes(r.RouteOpts.Receiver, []string{})...)
+
 	var all []*Route
 
 	for _, cr := range r.Routes {
-		matches := cr.Match(lset)
+		matches := cr.MatchWithContext(ctx, lset)
 
 		all = append(all, matches...)
 
 		if matches != nil && !cr.Continue {
+			telemetry.AddEvent(ctx, "route.stop_processing")
 			break
 		}
 	}
 
 	// If no child nodes were matches, the current node itself is a match.
 	if len(all) == 0 {
+		telemetry.AddEvent(ctx, "route.leaf_match")
 		all = append(all, r)
 	}
 

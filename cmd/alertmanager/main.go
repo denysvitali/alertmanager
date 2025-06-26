@@ -56,6 +56,7 @@ import (
 	"github.com/prometheus/alertmanager/notify"
 	"github.com/prometheus/alertmanager/provider/mem"
 	"github.com/prometheus/alertmanager/silence"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/timeinterval"
 	"github.com/prometheus/alertmanager/types"
@@ -121,11 +122,14 @@ func init() {
 
 func instrumentHandler(handlerName string, handler http.HandlerFunc) http.HandlerFunc {
 	handlerLabel := prometheus.Labels{"handler": handlerName}
+	// Apply telemetry tracing middleware first
+	tracedHandler := telemetry.HTTPMiddleware(handlerName)(handler)
+	// Then apply Prometheus instrumentation
 	return promhttp.InstrumentHandlerDuration(
 		requestDuration.MustCurryWith(handlerLabel),
 		promhttp.InstrumentHandlerResponseSize(
 			responseSize.MustCurryWith(handlerLabel),
-			handler,
+			tracedHandler,
 		),
 	)
 }
@@ -191,6 +195,24 @@ func run() int {
 	logger.Info("Starting Alertmanager", "version", version.Info())
 	logger.Info("Build context", "build_context", version.BuildContext())
 
+	// Initialize OpenTelemetry tracing
+	ctx := context.Background()
+	tracingShutdown, err := telemetry.Initialize(ctx, telemetry.Config{
+		Logger: logger.With("component", "telemetry"),
+	})
+	if err != nil {
+		logger.Error("Failed to initialize telemetry", "err", err)
+		return 1
+	}
+	defer func() {
+		if shutdownErr := tracingShutdown(context.Background()); shutdownErr != nil {
+			logger.Error("Failed to shutdown telemetry", "err", shutdownErr)
+		}
+	}()
+
+	// Create a root span for the entire alertmanager startup and runtime
+	ctx, startupSpan := telemetry.StartSpan(ctx, "alertmanager.startup")
+
 	ff, err := featurecontrol.NewFlags(logger, *featureFlags)
 	if err != nil {
 		logger.Error("error parsing the feature flag list", "err", err)
@@ -226,7 +248,9 @@ func run() int {
 		}
 	}
 
-	err = os.MkdirAll(*dataDir, 0o777)
+	err = telemetry.TraceFunc(ctx, "alertmanager.setup.datadir", func(ctx context.Context) error {
+		return os.MkdirAll(*dataDir, 0o777)
+	})
 	if err != nil {
 		logger.Error("Unable to create data directory", "err", err)
 		return 1
@@ -239,22 +263,24 @@ func run() int {
 	}
 	var peer *cluster.Peer
 	if *clusterBindAddr != "" {
-		peer, err = cluster.Create(
-			logger.With("component", "cluster"),
-			prometheus.DefaultRegisterer,
-			*clusterBindAddr,
-			*clusterAdvertiseAddr,
-			*peers,
-			true,
-			*pushPullInterval,
-			*gossipInterval,
-			*tcpTimeout,
-			*probeTimeout,
-			*probeInterval,
-			tlsTransportConfig,
-			*allowInsecureAdvertise,
-			*label,
-		)
+		peer, err = telemetry.TraceFuncWithResult(ctx, "alertmanager.setup.cluster", func(ctx context.Context) (*cluster.Peer, error) {
+			return cluster.Create(
+				logger.With("component", "cluster"),
+				prometheus.DefaultRegisterer,
+				*clusterBindAddr,
+				*clusterAdvertiseAddr,
+				*peers,
+				true,
+				*pushPullInterval,
+				*gossipInterval,
+				*tcpTimeout,
+				*probeTimeout,
+				*probeInterval,
+				tlsTransportConfig,
+				*allowInsecureAdvertise,
+				*label,
+			)
+		})
 		if err != nil {
 			logger.Error("unable to initialize gossip mesh", "err", err)
 			return 1
@@ -565,6 +591,10 @@ func run() int {
 			}
 		}()
 	}()
+
+	// Mark startup as complete
+	startupSpan.End()
+	logger.Info("Alertmanager startup complete")
 
 	var (
 		hup  = make(chan os.Signal, 1)

@@ -28,6 +28,7 @@ import (
 	"github.com/prometheus/alertmanager/notify"
 	"github.com/prometheus/alertmanager/provider"
 	"github.com/prometheus/alertmanager/store"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/types"
 )
 
@@ -170,8 +171,18 @@ func (d *Dispatcher) run(it provider.AlertIterator) {
 				continue
 			}
 
+			ctx, span := telemetry.StartSpan(d.ctx, "dispatch.process_alert",
+				telemetry.WithAlertAttributes(alert.Name(), "", 1)...)
+			defer span.End()
+
 			now := time.Now()
-			for _, r := range d.route.Match(alert.Labels) {
+			routes := d.route.MatchWithContext(ctx, alert.Labels)
+			telemetry.AddEvent(ctx, "dispatch.route_match",
+				telemetry.WithRouteAttributes("", []string{})...)
+
+			for _, r := range routes {
+				telemetry.AddEvent(ctx, "dispatch.process_route",
+					telemetry.WithRouteAttributes(r.RouteOpts.Receiver, []string{})...)
 				d.processAlert(alert, r)
 			}
 			d.metrics.processingDuration.Observe(time.Since(now).Seconds())
@@ -311,6 +322,13 @@ type notifyFunc func(context.Context, ...*types.Alert) bool
 // processAlert determines in which aggregation group the alert falls
 // and inserts it.
 func (d *Dispatcher) processAlert(alert *types.Alert, route *Route) {
+	ctx, span := telemetry.StartSpan(d.ctx, "dispatch.process_alert_route",
+		telemetry.WithAlertAttributes(alert.Name(), "", 1)...,
+	)
+	telemetry.SetAttributes(ctx,
+		telemetry.WithRouteAttributes(route.RouteOpts.Receiver, []string{})...)
+	defer span.End()
+
 	groupLabels := getGroupLabels(alert, route)
 
 	fp := groupLabels.Fingerprint()
@@ -326,6 +344,7 @@ func (d *Dispatcher) processAlert(alert *types.Alert, route *Route) {
 
 	ag, ok := routeGroups[fp]
 	if ok {
+		telemetry.AddEvent(ctx, "dispatch.insert_to_existing_group")
 		ag.insert(alert)
 		return
 	}
@@ -333,10 +352,12 @@ func (d *Dispatcher) processAlert(alert *types.Alert, route *Route) {
 	// If the group does not exist, create it. But check the limit first.
 	if limit := d.limits.MaxNumberOfAggregationGroups(); limit > 0 && d.aggrGroupsNum >= limit {
 		d.metrics.aggrGroupLimitReached.Inc()
+		telemetry.AddEvent(ctx, "dispatch.group_limit_reached")
 		d.logger.Error("Too many aggregation groups, cannot create new group for alert", "groups", d.aggrGroupsNum, "limit", limit, "alert", alert.Name())
 		return
 	}
 
+	telemetry.AddEvent(ctx, "dispatch.create_new_group")
 	ag = newAggrGroup(d.ctx, groupLabels, route, d.timeout, d.logger)
 	routeGroups[fp] = ag
 	d.aggrGroupsNum++

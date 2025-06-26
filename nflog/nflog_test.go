@@ -15,6 +15,7 @@ package nflog
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -34,6 +35,7 @@ import (
 func TestLogGC(t *testing.T) {
 	mockClock := quartz.NewMock(t)
 	now := mockClock.Now()
+	ctx := context.Background()
 	// We only care about key names and expiration timestamps.
 	newEntry := func(ts time.Time) *pb.MeshEntry {
 		return &pb.MeshEntry{
@@ -50,7 +52,7 @@ func TestLogGC(t *testing.T) {
 		clock:   mockClock,
 		metrics: newMetrics(nil),
 	}
-	n, err := l.GC()
+	n, err := l.GC(ctx)
 	require.NoError(t, err, "unexpected error in garbage collection")
 	require.Equal(t, 2, n, "unexpected number of removed entries")
 
@@ -338,31 +340,32 @@ func TestQuery(t *testing.T) {
 	}
 
 	recv := new(pb.Receiver)
+	ctx := context.TODO()
 
 	// no key param
-	_, err = nl.Query(QGroupKey("key"))
+	_, err = nl.Query(ctx, QGroupKey("key"))
 	require.EqualError(t, err, "no query parameters specified")
 
 	// no recv param
-	_, err = nl.Query(QReceiver(recv))
+	_, err = nl.Query(ctx, QReceiver(recv))
 	require.EqualError(t, err, "no query parameters specified")
 
 	// no entry
-	_, err = nl.Query(QGroupKey("nonexistentkey"), QReceiver(recv))
+	_, err = nl.Query(ctx, QGroupKey("nonexistentkey"), QReceiver(recv))
 	require.EqualError(t, err, "not found")
 
 	// existing entry
 	firingAlerts := []uint64{1, 2, 3}
 	resolvedAlerts := []uint64{4, 5}
 
-	err = nl.Log(recv, "key", firingAlerts, resolvedAlerts, 0)
+	err = nl.Log(ctx, recv, "key", firingAlerts, resolvedAlerts, 0)
 	require.NoError(t, err, "logging notification failed")
 
-	entries, err := nl.Query(QGroupKey("key"), QReceiver(recv))
+	entries, err := nl.Query(ctx, QGroupKey("key"), QReceiver(recv))
 	require.NoError(t, err, "querying nflog failed")
 	entry := entries[0]
-	require.EqualValues(t, firingAlerts, entry.FiringAlerts)
-	require.EqualValues(t, resolvedAlerts, entry.ResolvedAlerts)
+	require.Equal(t, firingAlerts, entry.FiringAlerts)
+	require.Equal(t, resolvedAlerts, entry.ResolvedAlerts)
 }
 
 func TestStateDecodingError(t *testing.T) {

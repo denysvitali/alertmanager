@@ -17,6 +17,7 @@ package silence
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -35,11 +36,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/promslog"
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/prometheus/alertmanager/cluster"
 	"github.com/prometheus/alertmanager/matcher/compat"
 	"github.com/prometheus/alertmanager/pkg/labels"
 	pb "github.com/prometheus/alertmanager/silence/silencepb"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/types"
 )
 
@@ -111,6 +114,14 @@ func NewSilencer(s *Silences, m types.AlertMarker, l *slog.Logger) *Silencer {
 
 // Mutes implements the Muter interface.
 func (s *Silencer) Mutes(lset model.LabelSet) bool {
+	return s.MutesWithContext(context.Background(), lset)
+}
+
+// MutesWithContext implements the Muter interface with tracing context.
+func (s *Silencer) MutesWithContext(ctx context.Context, lset model.LabelSet) bool {
+	ctx, span := telemetry.StartSpan(ctx, "silence.mutes")
+	defer span.End()
+
 	fp := lset.Fingerprint()
 	activeIDs, pendingIDs, markerVersion, _ := s.marker.Silenced(fp)
 
@@ -119,6 +130,8 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 		allSils    []*pb.Silence
 		newVersion = markerVersion
 	)
+
+	telemetry.AddEvent(ctx, "silence.check_version")
 	if markerVersion == s.silences.Version() {
 		totalSilences := len(activeIDs) + len(pendingIDs)
 		// No new silences added, just need to check which of the old
@@ -127,8 +140,10 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 		if totalSilences == 0 {
 			// Super fast path: No silences ever applied to this
 			// alert, none have been added. We are done.
+			telemetry.AddEvent(ctx, "silence.fast_path_no_silences")
 			return false
 		}
+		telemetry.AddEvent(ctx, "silence.fast_path_check_existing")
 		// This is still a quite fast path: No silences have been added,
 		// we only need to check which of the applicable silences are
 		// currently active. Note that newVersion is left at
@@ -141,6 +156,7 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 			QState(types.SilenceStateActive, types.SilenceStatePending),
 		)
 	} else {
+		telemetry.AddEvent(ctx, "silence.full_query_needed")
 		// New silences have been added, do a full query.
 		allSils, newVersion, err = s.silences.Query(
 			QState(types.SilenceStateActive, types.SilenceStatePending),
@@ -148,10 +164,12 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 		)
 	}
 	if err != nil {
+		telemetry.SetError(ctx, err)
 		s.logger.Error("Querying silences failed, alerts might not get silenced correctly", "err", err)
 	}
 	if len(allSils) == 0 {
 		// Easy case, neither active nor pending silences anymore.
+		telemetry.AddEvent(ctx, "silence.no_silences_found")
 		s.marker.SetActiveOrSilenced(fp, newVersion, nil, nil)
 		return false
 	}
@@ -161,6 +179,10 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 	// current ID slices for concurrency reasons.
 	activeIDs, pendingIDs = nil, nil
 	now := s.silences.nowUTC()
+
+	telemetry.AddEvent(ctx, "silence.processing_silences",
+		telemetry.WithAlertAttributes("", "", len(allSils))...)
+
 	for _, sil := range allSils {
 		switch getState(sil, now) {
 		case types.SilenceStatePending:
@@ -183,7 +205,14 @@ func (s *Silencer) Mutes(lset model.LabelSet) bool {
 
 	s.marker.SetActiveOrSilenced(fp, newVersion, activeIDs, pendingIDs)
 
-	return len(activeIDs) > 0
+	isActive := len(activeIDs) > 0
+	if isActive {
+		telemetry.AddEvent(ctx, "silence.silenced")
+	} else {
+		telemetry.AddEvent(ctx, "silence.not_silenced")
+	}
+
+	return isActive
 }
 
 // Silences holds a silence state that can be modified, queried, and snapshot.
@@ -593,6 +622,15 @@ func (s *Silences) setSilence(msil *pb.MeshSilence, now time.Time) error {
 // Set the specified silence. If a silence with the ID already exists and the modification
 // modifies history, the old silence gets expired and a new one is created.
 func (s *Silences) Set(sil *pb.Silence) error {
+	return s.SetWithContext(context.Background(), sil)
+}
+
+// SetWithContext sets the specified silence with tracing context.
+func (s *Silences) SetWithContext(ctx context.Context, sil *pb.Silence) error {
+	attrs := telemetry.WithSilenceAttributes(sil.Id, len(sil.Matchers))
+	_, span := telemetry.StartSpan(ctx, "silence.set", attrs...)
+	defer span.End()
+
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 
@@ -602,21 +640,30 @@ func (s *Silences) Set(sil *pb.Silence) error {
 	}
 
 	if err := validateSilence(sil); err != nil {
+		telemetry.SetError(ctx, err)
 		return fmt.Errorf("invalid silence: %w", err)
 	}
 
 	prev, ok := s.getSilence(sil.Id)
 	if sil.Id != "" && !ok {
-		return ErrNotFound
+		err := ErrNotFound
+		telemetry.SetError(ctx, err)
+		return err
 	}
 
 	if ok && canUpdate(prev, sil, now) {
+		telemetry.AddEvent(ctx, "silence.update_existing")
 		sil.UpdatedAt = now
 		msil := s.toMeshSilence(sil)
 		if err := s.checkSizeLimits(msil); err != nil {
+			telemetry.SetError(ctx, err)
 			return err
 		}
-		return s.setSilence(msil, now)
+		if err := s.setSilence(msil, now); err != nil {
+			telemetry.SetError(ctx, err)
+			return err
+		}
+		return nil
 	}
 
 	// If we got here it's either a new silence or a replacing one (which would
@@ -624,15 +671,20 @@ func (s *Silences) Set(sil *pb.Silence) error {
 	// the new silence.
 	if s.limits.MaxSilences != nil {
 		if m := s.limits.MaxSilences(); m > 0 && len(s.st)+1 > m {
-			return fmt.Errorf("exceeded maximum number of silences: %d (limit: %d)", len(s.st), m)
+			err := fmt.Errorf("exceeded maximum number of silences: %d (limit: %d)", len(s.st), m)
+			telemetry.SetError(ctx, err)
+			return err
 		}
 	}
 
 	uid, err := uuid.NewV4()
 	if err != nil {
-		return fmt.Errorf("generate uuid: %w", err)
+		err = fmt.Errorf("generate uuid: %w", err)
+		telemetry.SetError(ctx, err)
+		return err
 	}
 	sil.Id = uid.String()
+	telemetry.SetAttributes(ctx, attribute.String(telemetry.SilenceIDKey, sil.Id))
 
 	if sil.StartsAt.Before(now) {
 		sil.StartsAt = now
@@ -641,18 +693,27 @@ func (s *Silences) Set(sil *pb.Silence) error {
 
 	msil := s.toMeshSilence(sil)
 	if err := s.checkSizeLimits(msil); err != nil {
+		telemetry.SetError(ctx, err)
 		return err
 	}
 
 	if ok && getState(prev, s.nowUTC()) != types.SilenceStateExpired {
 		// We cannot update the silence, expire the old one to leave a history of
 		// the silence before modification.
+		telemetry.AddEvent(ctx, "silence.expire_previous")
 		if err := s.expire(prev.Id); err != nil {
-			return fmt.Errorf("expire previous silence: %w", err)
+			err = fmt.Errorf("expire previous silence: %w", err)
+			telemetry.SetError(ctx, err)
+			return err
 		}
 	}
 
-	return s.setSilence(msil, now)
+	telemetry.AddEvent(ctx, "silence.create_new")
+	if err := s.setSilence(msil, now); err != nil {
+		telemetry.SetError(ctx, err)
+		return err
+	}
+	return nil
 }
 
 // canUpdate returns true if silence a can be updated to b without
@@ -1029,13 +1090,13 @@ type replaceFile struct {
 }
 
 func (f *replaceFile) Close() error {
-	if err := f.File.Sync(); err != nil {
+	if err := f.Sync(); err != nil {
 		return err
 	}
 	if err := f.File.Close(); err != nil {
 		return err
 	}
-	return os.Rename(f.File.Name(), f.filename)
+	return os.Rename(f.Name(), f.filename)
 }
 
 // openReplace opens a new temporary file that is moved to filename on closing.

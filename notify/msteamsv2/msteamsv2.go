@@ -26,9 +26,11 @@ import (
 
 	commoncfg "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -94,7 +96,7 @@ func New(c *config.MSTeamsV2Config, t *template.Template, l *slog.Logger, httpOp
 		conf:         c,
 		tmpl:         t,
 		logger:       l,
-		client:       client,
+		client:       notify.InstrumentedClient(client, "msteamsv2"),
 		retrier:      &notify.Retrier{},
 		webhookURL:   c.WebhookURL,
 		postJSONFunc: notify.PostJSON,
@@ -104,19 +106,27 @@ func New(c *config.MSTeamsV2Config, t *template.Template, l *slog.Logger, httpOp
 }
 
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "notification.msteamsv2.send",
+		telemetry.WithNotificationAlertAttributes("msteamsv2", "msteamsv2", as)...)
+	defer span.End()
+
 	key, err := notify.ExtractGroupKey(ctx)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to extract group key")
 		return false, err
 	}
 
 	n.logger.Debug("extracted group key", "key", key)
 
+	telemetry.AddEvent(ctx, "msteamsv2.template_data_preparation")
 	data := notify.GetTemplateData(ctx, n.tmpl, as, n.logger)
 	tmpl := notify.TmplText(n.tmpl, data, &err)
 	if err != nil {
 		return false, err
 	}
 
+	telemetry.AddEvent(ctx, "msteamsv2.template_execution")
 	title := tmpl(n.conf.Title)
 	if err != nil {
 		return false, err

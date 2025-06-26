@@ -22,10 +22,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/prometheus/common/version"
 
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -35,6 +37,12 @@ const truncationMarker = "…"
 
 // UserAgentHeader is the default User-Agent for notification requests.
 var UserAgentHeader = version.ComponentUserAgent("Alertmanager")
+
+// InstrumentedClient creates an HTTP client with OpenTelemetry instrumentation.
+// This ensures that all outgoing HTTP requests from notifications are traced.
+func InstrumentedClient(client *http.Client, operationName string) *http.Client {
+	return telemetry.InstrumentHTTPClient(client, operationName)
+}
 
 // RedactURL removes the URL part from an error of *url.Error type.
 func RedactURL(err error) error {
@@ -74,6 +82,20 @@ func request(ctx context.Context, client *http.Client, method, url, bodyType str
 	if bodyType != "" {
 		req.Header.Set("Content-Type", bodyType)
 	}
+
+	if !strings.EqualFold(os.Getenv("ALERTMANAGER_DISABLE_SEND_SERVER_NAME"), "true") {
+		hostname, err := os.Hostname()
+		if err == nil {
+			req.Header.Set("X-AlertManager-Server-Name", hostname)
+		}
+	}
+
+	// Add tracing headers to the request
+	tracingHeaders := telemetry.GetTracingHeaders(ctx)
+	for key, value := range tracingHeaders {
+		req.Header.Set(key, value)
+	}
+
 	return client.Do(req.WithContext(ctx))
 }
 

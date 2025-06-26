@@ -26,6 +26,7 @@ import (
 	"github.com/prometheus/alertmanager/pkg/labels"
 	"github.com/prometheus/alertmanager/provider"
 	"github.com/prometheus/alertmanager/store"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/types"
 )
 
@@ -125,20 +126,33 @@ func (ih *Inhibitor) Stop() {
 // Mutes returns true iff the given label set is muted. It implements the Muter
 // interface.
 func (ih *Inhibitor) Mutes(lset model.LabelSet) bool {
+	return ih.MutesWithContext(context.Background(), lset)
+}
+
+func (ih *Inhibitor) MutesWithContext(ctx context.Context, lset model.LabelSet) bool {
+	ctx, span := telemetry.StartSpan(ctx, "inhibit.mutes")
+	defer span.End()
+
 	fp := lset.Fingerprint()
 
-	for _, r := range ih.rules {
+	for i, r := range ih.rules {
+		telemetry.AddEvent(ctx, "inhibit.rule_check")
 		if !r.TargetMatchers.Matches(lset) {
 			// If target side of rule doesn't match, we don't need to look any further.
 			continue
 		}
+		telemetry.AddEvent(ctx, "inhibit.target_match",
+			telemetry.WithAlertAttributes("", "", i)...)
+
 		// If we are here, the target side matches. If the source side matches, too, we
 		// need to exclude inhibiting alerts for which the same is true.
 		if inhibitedByFP, eq := r.hasEqual(lset, r.SourceMatchers.Matches(lset)); eq {
+			telemetry.AddEvent(ctx, "inhibit.inhibited")
 			ih.marker.SetInhibited(fp, inhibitedByFP.String())
 			return true
 		}
 	}
+	telemetry.AddEvent(ctx, "inhibit.not_inhibited")
 	ih.marker.SetInhibited(fp)
 
 	return false

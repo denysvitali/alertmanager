@@ -26,12 +26,15 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/model"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/featurecontrol"
 	"github.com/prometheus/alertmanager/inhibit"
 	"github.com/prometheus/alertmanager/nflog"
 	"github.com/prometheus/alertmanager/nflog/nflogpb"
 	"github.com/prometheus/alertmanager/silence"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/timeinterval"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -253,8 +256,8 @@ func (f StageFunc) Exec(ctx context.Context, l *slog.Logger, alerts ...*types.Al
 }
 
 type NotificationLog interface {
-	Log(r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error
-	Query(params ...nflog.QueryParam) ([]*nflogpb.Entry, error)
+	Log(ctx context.Context, r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error
+	Query(ctx context.Context, params ...nflog.QueryParam) ([]*nflogpb.Entry, error)
 }
 
 type Metrics struct {
@@ -728,7 +731,7 @@ func (n *DedupStage) Exec(ctx context.Context, _ *slog.Logger, alerts ...*types.
 	ctx = WithFiringAlerts(ctx, firing)
 	ctx = WithResolvedAlerts(ctx, resolved)
 
-	entries, err := n.nflog.Query(nflog.QGroupKey(gkey), nflog.QReceiver(n.recv))
+	entries, err := n.nflog.Query(ctx, nflog.QGroupKey(gkey), nflog.QReceiver(n.recv))
 	if err != nil && !errors.Is(err, nflog.ErrNotFound) {
 		return ctx, nil, err
 	}
@@ -774,6 +777,17 @@ func NewRetryStage(i Integration, groupName string, metrics *Metrics) *RetryStag
 }
 
 func (r RetryStage) Exec(ctx context.Context, l *slog.Logger, alerts ...*types.Alert) (context.Context, []*types.Alert, error) {
+	ctx, span := telemetry.StartSpan(ctx, "notify.retry_stage")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("retry.integration", r.integration.String()),
+		attribute.String("retry.group_name", r.groupName),
+		attribute.Int("retry.alerts_count", len(alerts)),
+	)
+
+	telemetry.AddEvent(ctx, "retry.stage_start")
+
 	r.metrics.numNotifications.WithLabelValues(r.labelValues...).Inc()
 	ctx, alerts, err := r.exec(ctx, l, alerts...)
 
@@ -783,12 +797,24 @@ func (r RetryStage) Exec(ctx context.Context, l *slog.Logger, alerts ...*types.A
 		if errors.As(err, &e) {
 			failureReason = e.Reason.String()
 		}
+		span.SetAttributes(attribute.String("retry.failure_reason", failureReason))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "retry stage failed")
+		telemetry.AddEvent(ctx, "retry.stage_failed",
+			attribute.String("failure_reason", failureReason))
 		r.metrics.numTotalFailedNotifications.WithLabelValues(append(r.labelValues, failureReason)...).Inc()
+	} else {
+		span.SetStatus(codes.Ok, "retry stage completed")
+		telemetry.AddEvent(ctx, "retry.stage_success")
 	}
+
 	return ctx, alerts, err
 }
 
 func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*types.Alert) (context.Context, []*types.Alert, error) {
+	ctx, span := telemetry.StartSpan(ctx, "notify.retry_exec")
+	defer span.End()
+
 	var sent []*types.Alert
 
 	// If we shouldn't send notifications for resolved alerts, but there are only
@@ -797,9 +823,14 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*types.A
 	if !r.integration.SendResolved() {
 		firing, ok := FiringAlerts(ctx)
 		if !ok {
-			return ctx, nil, errors.New("firing alerts missing")
+			err := errors.New("firing alerts missing")
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "firing alerts missing")
+			return ctx, nil, err
 		}
 		if len(firing) == 0 {
+			telemetry.AddEvent(ctx, "retry.all_alerts_resolved_skipped")
+			span.SetStatus(codes.Ok, "all alerts resolved, skipping")
 			return ctx, alerts, nil
 		}
 		for _, a := range alerts {
@@ -807,8 +838,17 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*types.A
 				sent = append(sent, a)
 			}
 		}
+		span.SetAttributes(
+			attribute.Bool("retry.send_resolved", false),
+			attribute.Int("retry.firing_alerts_count", len(firing)),
+			attribute.Int("retry.sent_alerts_count", len(sent)),
+		)
 	} else {
 		sent = alerts
+		span.SetAttributes(
+			attribute.Bool("retry.send_resolved", true),
+			attribute.Int("retry.sent_alerts_count", len(sent)),
+		)
 	}
 
 	b := backoff.NewExponentialBackOff()
@@ -825,7 +865,10 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*types.A
 	l = l.With("receiver", r.groupName, "integration", r.integration.String())
 	if groupKey, ok := GroupKey(ctx); ok {
 		l = l.With("aggrGroup", groupKey)
+		span.SetAttributes(attribute.String("retry.group_key", groupKey))
 	}
+
+	telemetry.AddEvent(ctx, "retry.starting_attempts")
 
 	for {
 
@@ -841,9 +884,16 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*types.A
 				}
 			}
 
+			span.SetAttributes(attribute.Int("retry.attempts_made", i))
 			if iErr != nil {
+				span.RecordError(iErr)
+				span.SetStatus(codes.Error, "retry canceled")
+				telemetry.AddEvent(ctx, "retry.canceled",
+					attribute.Int("attempts", i),
+					attribute.String("error", iErr.Error()))
 				return ctx, nil, fmt.Errorf("%s/%s: notify retry canceled after %d attempts: %w", r.groupName, r.integration.String(), i, iErr)
 			}
+			span.SetStatus(codes.Ok, "retry completed without error")
 			return ctx, nil, nil
 		default:
 		}
@@ -851,14 +901,44 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*types.A
 		select {
 		case <-tick.C:
 			now := time.Now()
-			retry, err := r.integration.Notify(ctx, sent...)
+
+			// Create a child span for each retry attempt
+			attemptCtx, attemptSpan := telemetry.StartSpan(ctx, "notify.retry_attempt")
+			attemptSpan.SetAttributes(
+				attribute.Int("retry.attempt_number", i+1),
+				attribute.String("retry.integration", r.integration.String()),
+			)
+
+			retry, err := r.integration.Notify(attemptCtx, sent...)
 			i++
 			dur := time.Since(now)
+
+			attemptSpan.SetAttributes(
+				attribute.Float64("retry.attempt_duration_seconds", dur.Seconds()),
+				attribute.Bool("retry.should_retry", retry),
+			)
+
 			r.metrics.notificationLatencySeconds.WithLabelValues(r.labelValues...).Observe(dur.Seconds())
 			r.metrics.numNotificationRequestsTotal.WithLabelValues(r.labelValues...).Inc()
+
 			if err != nil {
+				attemptSpan.RecordError(err)
+				attemptSpan.SetStatus(codes.Error, "attempt failed")
+				telemetry.AddEvent(attemptCtx, "retry.attempt_failed",
+					attribute.Int("attempt", i),
+					attribute.String("error", err.Error()),
+					attribute.Bool("will_retry", retry),
+					attribute.Float64("duration_seconds", dur.Seconds()))
+
 				r.metrics.numNotificationRequestsFailedTotal.WithLabelValues(r.labelValues...).Inc()
 				if !retry {
+					attemptSpan.End()
+					span.SetAttributes(attribute.Int("retry.final_attempts", i))
+					span.RecordError(err)
+					span.SetStatus(codes.Error, "retry failed with unrecoverable error")
+					telemetry.AddEvent(ctx, "retry.failed_unrecoverable",
+						attribute.Int("attempts", i),
+						attribute.String("error", err.Error()))
 					return ctx, alerts, fmt.Errorf("%s/%s: notify retry canceled due to unrecoverable error after %d attempts: %w", r.groupName, r.integration.String(), i, err)
 				}
 				if ctx.Err() == nil {
@@ -870,7 +950,14 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*types.A
 					// integration upon context timeout.
 					iErr = err
 				}
+				attemptSpan.End()
 			} else {
+				attemptSpan.SetStatus(codes.Ok, "attempt succeeded")
+				telemetry.AddEvent(attemptCtx, "retry.attempt_succeeded",
+					attribute.Int("attempt", i),
+					attribute.Float64("duration_seconds", dur.Seconds()))
+				attemptSpan.End()
+
 				l := l.With("attempts", i, "duration", dur)
 				if i <= 1 {
 					l = l.With("alerts", fmt.Sprintf("%v", alerts))
@@ -878,6 +965,15 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*types.A
 				} else {
 					l.Info("Notify success")
 				}
+
+				span.SetAttributes(
+					attribute.Int("retry.successful_attempts", i),
+					attribute.Float64("retry.total_duration_seconds", dur.Seconds()),
+				)
+				span.SetStatus(codes.Ok, "retry succeeded")
+				telemetry.AddEvent(ctx, "retry.succeeded",
+					attribute.Int("attempts", i),
+					attribute.Float64("duration_seconds", dur.Seconds()))
 
 				return ctx, alerts, nil
 			}
@@ -890,9 +986,16 @@ func (r RetryStage) exec(ctx context.Context, l *slog.Logger, alerts ...*types.A
 					iErr = NewErrorWithReason(ContextDeadlineExceededReason, iErr)
 				}
 			}
+			span.SetAttributes(attribute.Int("retry.attempts_made", i))
 			if iErr != nil {
+				span.RecordError(iErr)
+				span.SetStatus(codes.Error, "retry canceled")
+				telemetry.AddEvent(ctx, "retry.canceled",
+					attribute.Int("attempts", i),
+					attribute.String("error", iErr.Error()))
 				return ctx, nil, fmt.Errorf("%s/%s: notify retry canceled after %d attempts: %w", r.groupName, r.integration.String(), i, iErr)
 			}
+			span.SetStatus(codes.Ok, "retry completed")
 			return ctx, nil, nil
 		}
 	}
@@ -936,7 +1039,7 @@ func (n SetNotifiesStage) Exec(ctx context.Context, l *slog.Logger, alerts ...*t
 	}
 	expiry := 2 * repeat
 
-	return ctx, alerts, n.nflog.Log(n.recv, gkey, firing, resolved, expiry)
+	return ctx, alerts, n.nflog.Log(ctx, n.recv, gkey, firing, resolved, expiry)
 }
 
 type timeStage struct {

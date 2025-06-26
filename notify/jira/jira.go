@@ -28,9 +28,12 @@ import (
 	commoncfg "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
 	"github.com/trivago/tgo/tcontainer"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -59,15 +62,21 @@ func New(c *config.JiraConfig, t *template.Template, l *slog.Logger, httpOpts ..
 		conf:    c,
 		tmpl:    t,
 		logger:  l,
-		client:  client,
+		client:  notify.InstrumentedClient(client, "jira"),
 		retrier: &notify.Retrier{RetryCodes: []int{http.StatusTooManyRequests}},
 	}, nil
 }
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "notification.jira.send",
+		telemetry.WithNotificationAlertAttributes("jira", "jira", as)...)
+	defer span.End()
+
 	key, err := notify.ExtractGroupKey(ctx)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to extract group key")
 		return false, err
 	}
 
@@ -76,47 +85,74 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 	var (
 		alerts = types.Alerts(as...)
 
-		tmplTextErr  error
-		data         = notify.GetTemplateData(ctx, n.tmpl, as, logger)
-		tmplText     = notify.TmplText(n.tmpl, data, &tmplTextErr)
-		tmplTextFunc = func(tmpl string) (string, error) {
-			return tmplText(tmpl), tmplTextErr
-		}
+		tmplTextErr error
+	)
 
+	telemetry.AddEvent(ctx, "jira.template_data_preparation")
+	data := notify.GetTemplateData(ctx, n.tmpl, as, logger)
+	telemetry.AddEvent(ctx, "jira.template_processing")
+	tmplText := notify.TmplText(n.tmpl, data, &tmplTextErr)
+	tmplTextFunc := func(tmpl string) (string, error) {
+		return tmplText(tmpl), tmplTextErr
+	}
+
+	var (
 		path   = "issue"
 		method = http.MethodPost
 	)
 
 	existingIssue, shouldRetry, err := n.searchExistingIssue(ctx, logger, key.Hash(), alerts.HasFiring(), tmplTextFunc)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to look up existing issues")
 		return shouldRetry, fmt.Errorf("failed to look up existing issues: %w", err)
 	}
 
 	if existingIssue == nil {
 		// Do not create new issues for resolved alerts
 		if alerts.Status() == model.AlertResolved {
+			span.SetStatus(codes.Ok, "skipping resolved alert without existing issue")
 			return false, nil
 		}
 
 		logger.Debug("create new issue")
+		telemetry.AddEvent(ctx, "jira.creating_new_issue")
+		span.SetAttributes(attribute.String("jira.operation", "create"))
 	} else {
 		path = "issue/" + existingIssue.Key
 		method = http.MethodPut
 
 		logger.Debug("updating existing issue", "issue_key", existingIssue.Key)
+		telemetry.AddEvent(ctx, "jira.updating_existing_issue", attribute.String("issue_key", existingIssue.Key))
+		span.SetAttributes(
+			attribute.String("jira.operation", "update"),
+			attribute.String("jira.issue_key", existingIssue.Key))
 	}
 
+	telemetry.AddEvent(ctx, "jira.preparing_request_body")
 	requestBody, err := n.prepareIssueRequestBody(ctx, logger, key.Hash(), tmplTextFunc)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to prepare request body")
 		return false, err
 	}
 
+	telemetry.AddEvent(ctx, "jira.sending_api_request")
 	_, shouldRetry, err = n.doAPIRequest(ctx, method, path, requestBody)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "API request failed")
 		return shouldRetry, fmt.Errorf("failed to %s request to %q: %w", method, path, err)
 	}
 
-	return n.transitionIssue(ctx, logger, existingIssue, alerts.HasFiring())
+	shouldRetry, err = n.transitionIssue(ctx, logger, existingIssue, alerts.HasFiring())
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "transition failed")
+		return shouldRetry, err
+	}
+	span.SetStatus(codes.Ok, "notification sent successfully")
+	return shouldRetry, nil
 }
 
 func (n *Notifier) prepareIssueRequestBody(ctx context.Context, logger *slog.Logger, groupID string, tmplTextFunc templateFunc) (issue, error) {

@@ -49,6 +49,7 @@ import (
 	"github.com/prometheus/alertmanager/provider"
 	"github.com/prometheus/alertmanager/silence"
 	"github.com/prometheus/alertmanager/silence/silencepb"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/types"
 )
 
@@ -246,8 +247,12 @@ func (api *API) getAlertsHandler(params alert_ops.GetAlertsParams) middleware.Re
 		logger = api.requestLogger(params.HTTPRequest)
 	)
 
+	ctx, span := telemetry.StartSpan(ctx, "api.get_alerts")
+	defer span.End()
+
 	matchers, err := parseFilter(params.Filter)
 	if err != nil {
+		telemetry.SetError(ctx, err)
 		logger.Debug("Failed to parse matchers", "err", err)
 		return alertgroup_ops.NewGetAlertGroupsBadRequest().WithPayload(err.Error())
 	}
@@ -255,6 +260,7 @@ func (api *API) getAlertsHandler(params alert_ops.GetAlertsParams) middleware.Re
 	if params.Receiver != nil {
 		receiverFilter, err = regexp.Compile("^(?:" + *params.Receiver + ")$")
 		if err != nil {
+			telemetry.SetError(ctx, err)
 			logger.Debug("Failed to compile receiver regex", "err", err)
 			return alert_ops.
 				NewGetAlertsBadRequest().
@@ -312,6 +318,11 @@ func (api *API) getAlertsHandler(params alert_ops.GetAlertsParams) middleware.Re
 
 func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.Responder {
 	logger := api.requestLogger(params.HTTPRequest)
+	ctx := params.HTTPRequest.Context()
+
+	ctx, span := telemetry.StartSpan(ctx, "api.post_alerts",
+		telemetry.WithAlertAttributes("", "", len(params.Alerts))...)
+	defer span.End()
 
 	alerts := OpenAPIAlertsToAlerts(params.Alerts)
 	now := time.Now()
@@ -319,6 +330,9 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 	api.mtx.RLock()
 	resolveTimeout := time.Duration(api.alertmanagerConfig.Global.ResolveTimeout)
 	api.mtx.RUnlock()
+
+	telemetry.AddEvent(ctx, "alert.processing.start",
+		telemetry.WithAlertAttributes("", "", len(alerts))...)
 
 	for _, alert := range alerts {
 		alert.UpdatedAt = now
@@ -349,6 +363,9 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 		validAlerts    = make([]*types.Alert, 0, len(alerts))
 		validationErrs = &types.MultiError{}
 	)
+
+	// Validate alerts
+	telemetry.AddEvent(ctx, "alert.validation.start")
 	for _, a := range alerts {
 		removeEmptyLabels(a.Labels)
 
@@ -359,12 +376,22 @@ func (api *API) postAlertsHandler(params alert_ops.PostAlertsParams) middleware.
 		}
 		validAlerts = append(validAlerts, a)
 	}
-	if err := api.alerts.Put(validAlerts...); err != nil {
-		logger.Error("Failed to create alerts", "err", err)
-		return alert_ops.NewPostAlertsInternalServerError().WithPayload(err.Error())
+	telemetry.AddEvent(ctx, "alert.validation.complete",
+		telemetry.WithAlertAttributes("", "", len(validAlerts))...)
+
+	// Store valid alerts
+	if len(validAlerts) > 0 {
+		telemetry.AddEvent(ctx, "alert.storage.start")
+		if err := api.alerts.Put(validAlerts...); err != nil {
+			telemetry.SetError(ctx, err)
+			logger.Error("Failed to create alerts", "err", err)
+			return alert_ops.NewPostAlertsInternalServerError().WithPayload(err.Error())
+		}
+		telemetry.AddEvent(ctx, "alert.storage.complete")
 	}
 
 	if validationErrs.Len() > 0 {
+		telemetry.SetError(ctx, validationErrs)
 		logger.Error("Failed to validate alerts", "err", validationErrs.Error())
 		return alert_ops.NewPostAlertsBadRequest().WithPayload(validationErrs.Error())
 	}
@@ -565,16 +592,16 @@ func SortSilences(sils open_api_models.GettableSilences) {
 		}
 		switch state1 {
 		case types.SilenceStateActive:
-			endsAt1 := time.Time(*sils[i].Silence.EndsAt)
-			endsAt2 := time.Time(*sils[j].Silence.EndsAt)
+			endsAt1 := time.Time(*sils[i].EndsAt)
+			endsAt2 := time.Time(*sils[j].EndsAt)
 			return endsAt1.Before(endsAt2)
 		case types.SilenceStatePending:
-			startsAt1 := time.Time(*sils[i].Silence.StartsAt)
-			startsAt2 := time.Time(*sils[j].Silence.StartsAt)
+			startsAt1 := time.Time(*sils[i].StartsAt)
+			startsAt2 := time.Time(*sils[j].StartsAt)
 			return startsAt1.Before(startsAt2)
 		case types.SilenceStateExpired:
-			endsAt1 := time.Time(*sils[i].Silence.EndsAt)
-			endsAt2 := time.Time(*sils[j].Silence.EndsAt)
+			endsAt1 := time.Time(*sils[i].EndsAt)
+			endsAt2 := time.Time(*sils[j].EndsAt)
 			return endsAt1.After(endsAt2)
 		}
 		return false

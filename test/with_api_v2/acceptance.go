@@ -56,6 +56,10 @@ type AcceptanceOpts struct {
 	RoutePrefix  string
 	Tolerance    time.Duration
 	baseTime     time.Time
+	// TracingEnabled enables OpenTelemetry tracing for the test
+	TracingEnabled bool
+	// TracingEndpoint specifies the OTLP endpoint for trace export
+	TracingEndpoint string
 }
 
 func (opts *AcceptanceOpts) alertString(a *models.GettableAlert) string {
@@ -169,14 +173,14 @@ func (t *AcceptanceTest) Run() {
 
 	for _, am := range t.amc.ams {
 		am.errc = errc
-		t.T.Cleanup(am.Terminate)
-		t.T.Cleanup(am.cleanup)
+		t.Cleanup(am.Terminate)
+		t.Cleanup(am.cleanup)
 	}
 
 	err := t.amc.Start()
 	if err != nil {
-		t.T.Log(err)
-		t.T.Fail()
+		t.Log(err)
+		t.Fail()
 		return
 	}
 
@@ -252,6 +256,7 @@ type Alertmanager struct {
 	confFile    *os.File
 	dir         string
 
+	mu   sync.RWMutex
 	cmd  *exec.Cmd
 	errc chan<- error
 }
@@ -308,10 +313,24 @@ func (am *Alertmanager) Start(additionalArg []string) error {
 	if am.opts.RoutePrefix != "" {
 		args = append(args, "--web.route-prefix", am.opts.RoutePrefix)
 	}
+	// Add tracing configuration if enabled
+	if am.opts.TracingEnabled {
+		args = append(args, "--tracing.enable")
+	}
 	args = append(args, additionalArg...)
 
 	cmd := exec.Command("../../../alertmanager", args...)
 
+	// Set environment variables for tracing if configured
+	if am.opts.TracingEnabled && am.opts.TracingEndpoint != "" {
+		cmd.Env = append(os.Environ(),
+			"OTEL_EXPORTER_OTLP_ENDPOINT="+am.opts.TracingEndpoint,
+			"OTEL_SERVICE_NAME=alertmanager-test",
+			"OTEL_TRACES_SAMPLER=always_on",
+		)
+	}
+
+	am.mu.Lock()
 	if am.cmd == nil {
 		var outb, errb buffer
 		cmd.Stdout = &outb
@@ -321,13 +340,17 @@ func (am *Alertmanager) Start(additionalArg []string) error {
 		cmd.Stderr = am.cmd.Stderr
 	}
 	am.cmd = cmd
+	am.mu.Unlock()
 
 	if err := am.cmd.Start(); err != nil {
 		return err
 	}
 
 	go func() {
-		if err := am.cmd.Wait(); err != nil {
+		am.mu.RLock()
+		cmdToWait := am.cmd
+		am.mu.RUnlock()
+		if err := cmdToWait.Wait(); err != nil {
 			am.errc <- err
 		}
 	}()
@@ -384,12 +407,15 @@ func (amc *AlertmanagerCluster) Terminate() {
 // data.
 func (am *Alertmanager) Terminate() {
 	am.t.Helper()
-	if am.cmd.Process != nil {
-		if err := syscall.Kill(am.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+	am.mu.RLock()
+	cmd := am.cmd
+	am.mu.RUnlock()
+	if cmd != nil && cmd.Process != nil {
+		if err := syscall.Kill(cmd.Process.Pid, syscall.SIGTERM); err != nil {
 			am.t.Logf("Error sending SIGTERM to Alertmanager process: %v", err)
 		}
-		am.t.Logf("stdout:\n%v", am.cmd.Stdout)
-		am.t.Logf("stderr:\n%v", am.cmd.Stderr)
+		am.t.Logf("stdout:\n%v", cmd.Stdout)
+		am.t.Logf("stderr:\n%v", cmd.Stderr)
 	}
 }
 
@@ -403,8 +429,11 @@ func (amc *AlertmanagerCluster) Reload() {
 // Reload sends the reloading signal to the Alertmanager process.
 func (am *Alertmanager) Reload() {
 	am.t.Helper()
-	if am.cmd.Process != nil {
-		if err := syscall.Kill(am.cmd.Process.Pid, syscall.SIGHUP); err != nil {
+	am.mu.RLock()
+	cmd := am.cmd
+	am.mu.RUnlock()
+	if cmd != nil && cmd.Process != nil {
+		if err := syscall.Kill(cmd.Process.Pid, syscall.SIGHUP); err != nil {
 			am.t.Fatalf("Error sending SIGHUP to Alertmanager process: %v", err)
 		}
 	}

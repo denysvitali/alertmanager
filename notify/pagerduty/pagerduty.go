@@ -28,9 +28,12 @@ import (
 	"github.com/alecthomas/units"
 	commoncfg "github.com/prometheus/common/config"
 	"github.com/prometheus/common/model"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/alertmanager/config"
 	"github.com/prometheus/alertmanager/notify"
+	"github.com/prometheus/alertmanager/telemetry"
 	"github.com/prometheus/alertmanager/template"
 	"github.com/prometheus/alertmanager/types"
 )
@@ -59,7 +62,8 @@ func New(c *config.PagerdutyConfig, t *template.Template, l *slog.Logger, httpOp
 	if err != nil {
 		return nil, err
 	}
-	n := &Notifier{conf: c, tmpl: t, logger: l, client: client}
+
+	n := &Notifier{conf: c, tmpl: t, logger: l, client: notify.InstrumentedClient(client, "pagerduty")}
 	if c.ServiceKey != "" || c.ServiceKeyFile != "" {
 		n.apiV1 = "https://events.pagerduty.com/generic/2010-04-15/create_event.json"
 		// Retrying can solve the issue on 403 (rate limiting) and 5xx response codes.
@@ -151,18 +155,26 @@ func (n *Notifier) notifyV1(
 	details map[string]string,
 	as ...*types.Alert,
 ) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "pagerduty.notify_v1")
+	defer span.End()
+
 	var tmplErr error
 	tmpl := notify.TmplText(n.tmpl, data, &tmplErr)
 
 	description, truncated := notify.TruncateInRunes(tmpl(n.conf.Description), maxV1DescriptionLenRunes)
 	if truncated {
+		telemetry.AddEvent(ctx, "pagerduty.description_truncated",
+			attribute.Int("max_runes", maxV1DescriptionLenRunes))
 		n.logger.Warn("Truncated description", "key", key, "max_runes", maxV1DescriptionLenRunes)
 	}
 
 	serviceKey := string(n.conf.ServiceKey)
 	if serviceKey == "" {
+		telemetry.AddEvent(ctx, "pagerduty.reading_service_key_file")
 		content, fileErr := os.ReadFile(n.conf.ServiceKeyFile)
 		if fileErr != nil {
+			span.RecordError(fileErr)
+			span.SetStatus(codes.Error, "failed to read service key file")
 			return false, fmt.Errorf("failed to read service key from file: %w", fileErr)
 		}
 		serviceKey = strings.TrimSpace(string(content))
@@ -182,24 +194,44 @@ func (n *Notifier) notifyV1(
 	}
 
 	if tmplErr != nil {
+		span.RecordError(tmplErr)
+		span.SetStatus(codes.Error, "template execution failed")
 		return false, fmt.Errorf("failed to template PagerDuty v1 message: %w", tmplErr)
 	}
 
 	// Ensure that the service key isn't empty after templating.
 	if msg.ServiceKey == "" {
-		return false, errors.New("service key cannot be empty")
-	}
-
-	encodedMsg, err := n.encodeMessage(msg)
-	if err != nil {
+		err := errors.New("service key cannot be empty")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "empty service key")
 		return false, err
 	}
 
+	span.SetAttributes(
+		attribute.String("pagerduty.incident_key", msg.IncidentKey),
+		attribute.Int("pagerduty.description_length", len(description)),
+		attribute.Bool("pagerduty.description_truncated", truncated),
+	)
+
+	telemetry.AddEvent(ctx, "pagerduty.encoding_message")
+	encodedMsg, err := n.encodeMessage(msg)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "message encoding failed")
+		return false, err
+	}
+
+	telemetry.AddEvent(ctx, "pagerduty.sending_request", attribute.String("url", n.apiV1))
 	resp, err := notify.PostJSON(ctx, n.client, n.apiV1, &encodedMsg)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "HTTP request failed")
 		return true, fmt.Errorf("failed to post message to PagerDuty v1: %w", err)
 	}
 	defer notify.Drain(resp)
+
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+	telemetry.AddEvent(ctx, "pagerduty.response_received", attribute.Int("status_code", resp.StatusCode))
 
 	return n.retrier.Check(resp.StatusCode, resp.Body)
 }
@@ -212,6 +244,9 @@ func (n *Notifier) notifyV2(
 	details map[string]string,
 	as ...*types.Alert,
 ) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "pagerduty.notify_v2")
+	defer span.End()
+
 	var tmplErr error
 	tmpl := notify.TmplText(n.tmpl, data, &tmplErr)
 
@@ -221,13 +256,18 @@ func (n *Notifier) notifyV2(
 
 	summary, truncated := notify.TruncateInRunes(tmpl(n.conf.Description), maxV2SummaryLenRunes)
 	if truncated {
+		telemetry.AddEvent(ctx, "pagerduty.summary_truncated",
+			attribute.Int("max_runes", maxV2SummaryLenRunes))
 		n.logger.Warn("Truncated summary", "key", key, "max_runes", maxV2SummaryLenRunes)
 	}
 
 	routingKey := string(n.conf.RoutingKey)
 	if routingKey == "" {
+		telemetry.AddEvent(ctx, "pagerduty.reading_routing_key_file")
 		content, fileErr := os.ReadFile(n.conf.RoutingKeyFile)
 		if fileErr != nil {
+			span.RecordError(fileErr)
+			span.SetStatus(codes.Error, "failed to read routing key file")
 			return false, fmt.Errorf("failed to read routing key from file: %w", fileErr)
 		}
 		routingKey = strings.TrimSpace(string(content))
@@ -275,28 +315,53 @@ func (n *Notifier) notifyV2(
 		}
 	}
 
+	span.SetAttributes(
+		attribute.String("pagerduty.dedup_key", msg.DedupKey),
+		attribute.String("pagerduty.severity", msg.Payload.Severity),
+		attribute.Int("pagerduty.summary_length", len(summary)),
+		attribute.Bool("pagerduty.summary_truncated", truncated),
+		attribute.Int("pagerduty.images_count", len(msg.Images)),
+		attribute.Int("pagerduty.links_count", len(msg.Links)),
+	)
+
 	if tmplErr != nil {
+		span.RecordError(tmplErr)
+		span.SetStatus(codes.Error, "template execution failed")
 		return false, fmt.Errorf("failed to template PagerDuty v2 message: %w", tmplErr)
 	}
 
 	// Ensure that the routing key isn't empty after templating.
 	if msg.RoutingKey == "" {
-		return false, errors.New("routing key cannot be empty")
-	}
-
-	encodedMsg, err := n.encodeMessage(msg)
-	if err != nil {
+		err := errors.New("routing key cannot be empty")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "empty routing key")
 		return false, err
 	}
 
+	telemetry.AddEvent(ctx, "pagerduty.encoding_message")
+	encodedMsg, err := n.encodeMessage(msg)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "message encoding failed")
+		return false, err
+	}
+
+	telemetry.AddEvent(ctx, "pagerduty.sending_request", attribute.String("url", n.conf.URL.String()))
 	resp, err := notify.PostJSON(ctx, n.client, n.conf.URL.String(), &encodedMsg)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "HTTP request failed")
 		return true, fmt.Errorf("failed to post message to PagerDuty: %w", err)
 	}
 	defer notify.Drain(resp)
 
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+	telemetry.AddEvent(ctx, "pagerduty.response_received", attribute.Int("status_code", resp.StatusCode))
+
 	retry, err := n.retrier.Check(resp.StatusCode, resp.Body)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "retry check failed")
 		return retry, notify.NewErrorWithReason(notify.GetFailureReasonFromStatusCode(resp.StatusCode), err)
 	}
 	return retry, err
@@ -304,8 +369,14 @@ func (n *Notifier) notifyV2(
 
 // Notify implements the Notifier interface.
 func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error) {
+	ctx, span := telemetry.StartSpan(ctx, "pagerduty.notify",
+		telemetry.WithNotificationAlertAttributes("pagerduty", "pagerduty", as)...)
+	defer span.End()
+
 	key, err := notify.ExtractGroupKey(ctx)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "failed to extract group key")
 		return false, err
 	}
 
@@ -318,21 +389,51 @@ func (n *Notifier) Notify(ctx context.Context, as ...*types.Alert) (bool, error)
 		eventType = pagerDutyEventResolve
 	}
 
+	span.SetAttributes(
+		attribute.String("pagerduty.event_type", eventType),
+		attribute.String("pagerduty.group_key", key.String()),
+		attribute.Int("pagerduty.alerts_count", len(as)),
+		attribute.String("pagerduty.alert_status", string(alerts.Status())),
+	)
+
+	telemetry.AddEvent(ctx, "pagerduty.notification_start", attribute.String("event_type", eventType))
+
 	n.logger.Debug("extracted group key", "key", key, "eventType", eventType)
 
 	details := make(map[string]string, len(n.conf.Details))
 	for k, v := range n.conf.Details {
 		detail, err := n.tmpl.ExecuteTextString(v, data)
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "template execution failed")
 			return false, fmt.Errorf("%q: failed to template %q: %w", k, v, err)
 		}
 		details[k] = detail
 	}
 
+	telemetry.AddEvent(ctx, "pagerduty.template_processed", attribute.Int("details_count", len(details)))
+
+	var retry bool
 	if n.apiV1 != "" {
-		return n.notifyV1(ctx, eventType, key, data, details, as...)
+		span.SetAttributes(attribute.String("pagerduty.api_version", "v1"))
+		retry, err = n.notifyV1(ctx, eventType, key, data, details, as...)
+	} else {
+		span.SetAttributes(attribute.String("pagerduty.api_version", "v2"))
+		retry, err = n.notifyV2(ctx, eventType, key, data, details, as...)
 	}
-	return n.notifyV2(ctx, eventType, key, data, details, as...)
+
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "notification failed")
+		telemetry.AddEvent(ctx, "pagerduty.notification_failed",
+			attribute.String("error", err.Error()),
+			attribute.Bool("retry", retry))
+	} else {
+		span.SetStatus(codes.Ok, "notification sent")
+		telemetry.AddEvent(ctx, "pagerduty.notification_success")
+	}
+
+	return retry, err
 }
 
 func errDetails(status int, body io.Reader) string {

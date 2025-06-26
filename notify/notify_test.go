@@ -62,15 +62,15 @@ type testNflog struct {
 	qres []*nflogpb.Entry
 	qerr error
 
-	logFunc func(r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error
+	logFunc func(ctx context.Context, r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error
 }
 
-func (l *testNflog) Query(p ...nflog.QueryParam) ([]*nflogpb.Entry, error) {
+func (l *testNflog) Query(ctx context.Context, p ...nflog.QueryParam) ([]*nflogpb.Entry, error) {
 	return l.qres, l.qerr
 }
 
-func (l *testNflog) Log(r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error {
-	return l.logFunc(r, gkey, firingAlerts, resolvedAlerts, expiry)
+func (l *testNflog) Log(ctx context.Context, r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error {
+	return l.logFunc(ctx, r, gkey, firingAlerts, resolvedAlerts, expiry)
 }
 
 func (l *testNflog) GC() (int, error) {
@@ -547,7 +547,7 @@ func TestRetryStageNoResolved(t *testing.T) {
 	// All alerts are resolved.
 	sent = sent[:0]
 	ctx = WithFiringAlerts(ctx, []uint64{})
-	alerts[1].Alert.EndsAt = time.Now().Add(-time.Hour)
+	alerts[1].EndsAt = time.Now().Add(-time.Hour)
 
 	resctx, res, err = r.Exec(ctx, promslog.NewNopLogger(), alerts...)
 	require.NoError(t, err)
@@ -592,7 +592,7 @@ func TestRetryStageSendResolved(t *testing.T) {
 	// All alerts are resolved.
 	sent = sent[:0]
 	ctx = WithFiringAlerts(ctx, []uint64{})
-	alerts[1].Alert.EndsAt = time.Now().Add(-time.Hour)
+	alerts[1].EndsAt = time.Now().Add(-time.Hour)
 
 	resctx, res, err = r.Exec(ctx, promslog.NewNopLogger(), alerts...)
 	require.NoError(t, err)
@@ -632,7 +632,7 @@ func TestSetNotifiesStage(t *testing.T) {
 	ctx = WithResolvedAlerts(ctx, []uint64{})
 	ctx = WithRepeatInterval(ctx, time.Hour)
 
-	tnflog.logFunc = func(r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error {
+	tnflog.logFunc = func(ctx context.Context, r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error {
 		require.Equal(t, s.recv, r)
 		require.Equal(t, "1", gkey)
 		require.Equal(t, []uint64{0, 1, 2}, firingAlerts)
@@ -648,7 +648,7 @@ func TestSetNotifiesStage(t *testing.T) {
 	ctx = WithFiringAlerts(ctx, []uint64{})
 	ctx = WithResolvedAlerts(ctx, []uint64{0, 1, 2})
 
-	tnflog.logFunc = func(r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error {
+	tnflog.logFunc = func(ctx context.Context, r *nflogpb.Receiver, gkey string, firingAlerts, resolvedAlerts []uint64, expiry time.Duration) error {
 		require.Equal(t, s.recv, r)
 		require.Equal(t, "1", gkey)
 		require.Equal(t, []uint64{}, firingAlerts)
@@ -915,7 +915,7 @@ func TestTimeMuteStage(t *testing.T) {
 
 			if len(test.mutedBy) == 0 {
 				// All alerts should be active.
-				require.Equal(t, len(test.alerts), len(active))
+				require.Len(t, active, len(test.alerts))
 				// The group should not be marked.
 				mutedBy, isMuted := marker.Muted("route1", "group1")
 				require.False(t, isMuted)
@@ -1033,7 +1033,7 @@ func TestTimeActiveStage(t *testing.T) {
 
 			if len(test.mutedBy) == 0 {
 				// All alerts should be active.
-				require.Equal(t, len(test.alerts), len(active))
+				require.Len(t, active, len(test.alerts))
 				// The group should not be marked.
 				mutedBy, isMuted := marker.Muted("route1", "group1")
 				require.False(t, isMuted)
