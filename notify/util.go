@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/prometheus/common/version"
@@ -80,6 +81,13 @@ func request(ctx context.Context, client *http.Client, method, url, bodyType str
 	req.Header.Set("User-Agent", UserAgentHeader)
 	if bodyType != "" {
 		req.Header.Set("Content-Type", bodyType)
+	}
+
+	if !strings.EqualFold(os.Getenv("ALERTMANAGER_DISABLE_SEND_SERVER_NAME"), "true") {
+		hostname, err := os.Hostname()
+		if err == nil {
+			req.Header.Set("X-AlertManager-Server-Name", hostname)
+		}
 	}
 
 	// Add tracing headers to the request
